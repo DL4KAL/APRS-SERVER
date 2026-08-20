@@ -16,7 +16,7 @@ CALLSIGN = "N0CALL"  # Nur zum Handshake/Lesen benötigt
 PASSCODE = "-1"
 
 # APRS-IS Filter: s/R (Wohnmobile/Campers), s/Y (Yachten/Boote), s/s (Schiffe)
-APRS_FILTER = "filter s/R s/Y s/s\r\n"
+APRS_FILTER = "filter r/50.7/7.1/500\r\n"
 
 # Datenbank-URL aus Render.com Umgebungsvariablen
 DATABASE_URL = os.environ.get("DATABASE_URL")

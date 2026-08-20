@@ -21,7 +21,7 @@ CALLSIGN = "DL4KAL"
 PASSCODE = "17065"
 
 # Erlaubte APRS-Symbole (lokale Validierung)
-ALLOWED_SYMBOLS = {'/v', '\\v', '/Y', '\\Y', '/$', '\\$', '/b', '\\b', '/R', '\\R'}
+# ALLOWED_SYMBOLS = {'/v', '\\v', '/Y', '\\Y', '/$', '\\$', '/b', '\\b', '/R', '\\R'}
 
 # Direkte Filter-Definition für den Login-Handshake
 FILTER_RULE = "s/v s/Y s/b"

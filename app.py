@@ -1,34 +1,28 @@
 import socket
-import re
 import threading
 import json
 import os
+import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 import psycopg2
+import aprslib
 
 # ==========================================
 # KONFIGURATION
 # ==========================================
 APRS_SERVER = "euro.aprs2.net"
 APRS_PORT = 14580
-CALLSIGN = "N0CALL"  # Nur zum Handshake/Lesen benötigt
+CALLSIGN = "N0CALL"
 PASSCODE = "-1"
 
-# APRS-IS Filter: s/R (Wohnmobile/Campers), s/Y (Yachten/Boote), s/s (Schiffe)
-APRS_FILTER = "filter r/50.7/7.1/500\r\n"
+# APRS-IS Filter: Umkreis 500km um Bonn (50.7° N, 7.1° E) für verlässlichen Datenstrom
+APRS_FILTER = "filter r/50.7/7.1/500"
 
-# Datenbank-URL aus Render.com Umgebungsvariablen
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
-# In-Memory Speicher für die aktuellsten Live-Positionen
 latest_stations = {}
 lock = threading.Lock()
-
-# Regex für Koordinaten & Symbole (! oder = oder @ gefolgt von Position)
-APRS_REGEX = re.compile(
-    r'([A-Z0-9\-]+)>.*?:[@=!]([0-9]{4}\.[0-9]{2}[NS])([/\\].)([0-9]{5}\.[0-9]{2}[EW])(.)(.*)'
-)
 
 # ==========================================
 # DATENBANK-FUNKTIONEN (SUPABASE)
@@ -45,13 +39,13 @@ def save_to_supabase(callsign, lat, lon, symbol, comment):
             INSERT INTO aprs_history (callsign, latitude, longitude, symbol, comment)
             VALUES (%s, %s, %s, %s, %s)
             """,
-            (callsign, lat, lon, symbol, comment[:100]) # Kommentar auf 100 Zeichen begrenzen
+            (callsign, lat, lon, symbol, comment[:100])
         )
         conn.commit()
         cur.close()
         conn.close()
     except Exception as e:
-        print(f"[DB-ERROR] Fehler beim Schreiben in Supabase: {e}")
+        print(f"[DB-ERROR] Schreiben fehlgeschlagen: {e}")
 
 def get_history_from_supabase(callsign, hours=24):
     """Liest die Historie der letzten X Stunden aus Supabase aus."""
@@ -82,41 +76,29 @@ def get_history_from_supabase(callsign, hours=24):
             for r in rows
         ]
     except Exception as e:
-        print(f"[DB-ERROR] Fehler beim Lesen aus Supabase: {e}")
+        print(f"[DB-ERROR] Lesen fehlgeschlagen: {e}")
         return []
 
 # ==========================================
-# APRS PARSER & SOCKET CLIENT
+# APRS-IS CLIENT (MIT APRSLIB PARSER)
 # ==========================================
-def parse_degrees(coord_str, is_lat=True):
-    """Konvertiert APRS-Gradminuten in Dezimalgrad."""
-    try:
-        if is_lat:
-            deg = float(coord_str[:2])
-            minutes = float(coord_str[2:-1])
-            direction = coord_str[-1]
-            val = deg + (minutes / 60.0)
-            return -val if direction == 'S' else val
-        else:
-            deg = float(coord_str[:3])
-            minutes = float(coord_str[3:-1])
-            direction = coord_str[-1]
-            val = deg + (minutes / 60.0)
-            return -val if direction == 'W' else val
-    except Exception:
-        return None
-
 def aprs_client_thread():
-    """Hält die TCP-Verbindung zum APRS-IS aufrecht und verarbeitet Baken."""
+    """Verbindet sich mit APRS-IS und parst Baken robust via aprslib."""
     while True:
         try:
             print(f"[APRS] Verbinde mit {APRS_SERVER}:{APRS_PORT}...")
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.connect((APRS_SERVER, APRS_PORT))
             
-            # Handshake
-            auth = f"user {CALLSIGN} pass {PASSCODE} vers FunkerkameradenPortal 1.0 {APRS_FILTER}"
+            # Handshake senden
+            auth = f"user {CALLSIGN} pass {PASSCODE} vers FunkerkameradenPortal 1.1\r\n"
             s.sendall(auth.encode('utf-8'))
+            
+            # 1 Sekunde warten, dann Filter separat absetzen
+            time.sleep(1)
+            filter_cmd = f"{APRS_FILTER}\r\n"
+            s.sendall(filter_cmd.encode('utf-8'))
+            print(f"[APRS] Filter gesendet: {APRS_FILTER}")
             
             buffer = ""
             while True:
@@ -126,50 +108,56 @@ def aprs_client_thread():
                 
                 buffer += data
                 lines = buffer.split('\r\n')
-                buffer = lines.pop() # Unvollständige letzte Zeile im Puffer halten
+                buffer = lines.pop()
                 
                 for line in lines:
-                    if line.startswith('#'):
+                    if line.startswith('#') or not line.strip():
                         continue
                     
-                    match = APRS_REGEX.search(line)
-                    if match:
-                        station_call = match.group(1)
-                        lat_raw = match.group(2)
-                        table_char = match.group(3)
-                        lon_raw = match.group(4)
-                        symbol_char = match.group(5)
-                        comment = match.group(6).strip()
+                    try:
+                        # aprslib übernimmt das vollständige Decoden (inkl. MIC-E)
+                        packet = aprslib.parse(line)
                         
-                        lat = parse_degrees(lat_raw, is_lat=True)
-                        lon = parse_degrees(lon_raw, is_lat=False)
-                        symbol = table_char + symbol_char
-                        
-                        if lat is not None and lon is not None:
-                            # 1. In-Memory Puffer für Live-Karte aktualisieren
+                        if 'latitude' in packet and 'longitude' in packet:
+                            cs = packet.get('from', 'UNKNOWN')
+                            lat = packet['latitude']
+                            lon = packet['longitude']
+                            
+                            sym_table = packet.get('symbol_table', '/')
+                            sym_code = packet.get('symbol', '>')
+                            symbol = f"{sym_table}{sym_code}"
+                            
+                            comment = packet.get('comment', '')
+                            
+                            # 1. In-Memory-Speicher für Live-Daten
                             with lock:
-                                latest_stations[station_call] = {
-                                    "callsign": station_call,
+                                latest_stations[cs] = {
+                                    "callsign": cs,
                                     "lat": lat,
                                     "lon": lon,
                                     "symbol": symbol,
                                     "comment": comment
                                 }
                             
-                            # 2. Dauerhaft in Supabase speichern
+                            # 2. Asynchron in Supabase sichern
                             threading.Thread(
                                 target=save_to_supabase,
-                                args=(station_call, lat, lon, symbol, comment),
+                                args=(cs, lat, lon, symbol, comment),
                                 daemon=True
                             ).start()
+                            
+                    except (aprslib.ParseError, aprslib.UnknownFormat):
+                        # Nicht parsebare Baken ignorierten
+                        pass
+                    except Exception as parse_ex:
+                        pass
 
         except Exception as e:
-            print(f"[APRS-ERROR] Verbindungsabbruch: {e}. Neuvorbindung in 10s...")
-            import time
+            print(f"[APRS-ERROR] Verbindungsabbruch: {e}. Reconnect in 10s...")
             time.sleep(10)
 
 # ==========================================
-# REST-API SERVER (CORS PREFLIGHT SUPPORT)
+# REST-API SERVER
 # ==========================================
 class APRSRequestHandler(BaseHTTPRequestHandler):
     def _send_cors_headers(self):
@@ -185,7 +173,7 @@ class APRSRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed_path = urlparse(self.path)
         
-        # Endpunkt 1: Live-Daten aller aktiven Stationen (/data.json)
+        # Endpunkt /data.json -> Liefert alle Baken im Puffer
         if parsed_path.path == '/data.json':
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
@@ -196,7 +184,7 @@ class APRSRequestHandler(BaseHTTPRequestHandler):
                 data = list(latest_stations.values())
             self.wfile.write(json.dumps(data).encode('utf-8'))
             
-        # Endpunkt 2: Historie einer bestimmten Station (/history.json?callsign=DL4KAL-7&hours=24)
+        # Endpunkt /history.json -> Liefert den Streckenverlauf aus Supabase
         elif parsed_path.path == '/history.json':
             query_params = parse_qs(parsed_path.query)
             callsign = query_params.get('callsign', [None])[0]
@@ -229,16 +217,14 @@ def run_http_server():
     port = int(os.environ.get("PORT", 10000))
     server_address = ('', port)
     httpd = HTTPServer(server_address, APRSRequestHandler)
-    print(f"[HTTP] REST-API läuft auf Port {port}...")
+    print(f"[HTTP] REST-API laeuft auf Port {port}...")
     httpd.serve_forever()
 
 # ==========================================
 # HAUPTPROGRAMM
 # ==========================================
 if __name__ == '__main__':
-    # Thread 1: APRS-IS Socket Listener
     aprs_thread = threading.Thread(target=aprs_client_thread, daemon=True)
     aprs_thread.start()
     
-    # Hauptthread: HTTP Server für Render.com
     run_http_server()

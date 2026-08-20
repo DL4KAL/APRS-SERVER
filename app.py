@@ -34,45 +34,41 @@ STORAGE_LOCK = threading.Lock()
 TG313_ACTIVE_CALLSIGNS = set()
 
 def update_tg313_stations():
-    """Holt alle 15 Sekunden die aktiven Nodes der TG 313 aus dem FM-Funknetz"""
+    """Holt die aktiven Nodes der TG 313 aus der FM-Funknetz SvxServer Dashboard API"""
     global TG313_ACTIVE_CALLSIGNS
-    urls = [
-        "https://livemap.fm-funknetz.de/api/status",
-        "https://fm-funknetz.de/api/status.json"
-    ]
+    url = "https://dashboard.fm-funknetz.de/json/status.json"
     
     while True:
-        success = False
-        for url in urls:
-            try:
-                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
-                with urllib.request.urlopen(req, timeout=10) as response:
-                    if response.status == 200:
-                        raw_data = response.read().decode('utf-8')
-                        data = json.loads(raw_data)
-                        active = set()
+        try:
+            req = urllib.request.Request(
+                url, 
+                headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+            )
+            with urllib.request.urlopen(req, timeout=10) as response:
+                if response.status == 200:
+                    raw_data = response.read().decode('utf-8')
+                    data = json.loads(raw_data)
+                    active = set()
+                    
+                    nodes = data.get('nodes', {})
+                    if isinstance(nodes, dict):
+                        nodes = nodes.values()
                         
-                        nodes = data.get('nodes', []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
-                        for node in nodes:
-                            tg_single = str(node.get('tg', node.get('active_tg', node.get('default_tg', ''))))
-                            tg_list = [str(x) for x in node.get('active_tgs', [])]
-                            
-                            if '313' in tg_list or tg_single == '313':
-                                call = node.get('callsign', node.get('name', node.get('sysop', '')))
-                                if call:
-                                    base_call = call.split('-')[0].strip().upper()
-                                    active.add(base_call)
+                    for node in nodes:
+                        tg = str(node.get('tg', node.get('active_tg', '')))
+                        tx = node.get('is_transmitting', False)
                         
-                        with STORAGE_LOCK:
-                            TG313_ACTIVE_CALLSIGNS = active
-                        print(f"[FM-FUNKNETZ] Aktive TG313 Rufzeichen: {list(TG313_ACTIVE_CALLSIGNS)}", flush=True)
-                        success = True
-                        break
-            except Exception:
-                continue
-        
-        if not success:
-            print("[FM-FUNKNETZ] Status-API nicht erreichbar, versuche erneut...", flush=True)
+                        if tg == '313' or tx:
+                            call = node.get('callsign', node.get('name', ''))
+                            if call:
+                                base_call = call.split('-')[0].strip().upper()
+                                active.add(base_call)
+                    
+                    with STORAGE_LOCK:
+                        TG313_ACTIVE_CALLSIGNS = active
+                    print(f"[FM-FUNKNETZ OK] TG313 Rufzeichen: {list(TG313_ACTIVE_CALLSIGNS)}", flush=True)
+        except Exception as e:
+            print(f"[FM-FUNKNETZ RETRY] Warte auf Daten... ({e})", flush=True)
             
         time.sleep(15)
 
@@ -168,7 +164,7 @@ def get_history_from_db(callsign=None, hours=24):
 def aprs_stream_worker():
     host = 'euro.aprs2.net'
     port = 14580
-    userline = f'user {CALLSIGN} pass {PASSCODE} vers FM-Funknetz-Server 1.4\r\n'
+    userline = f'user {CALLSIGN} pass {PASSCODE} vers FM-Funknetz-Server 1.5\r\n'
     
     while True:
         try:
@@ -197,7 +193,7 @@ def aprs_stream_worker():
                         station_call = line.split('>')[0].strip()
                         base_call = station_call.split('-')[0].strip().upper()
                         
-                        # Pruefe TG313 Aktivitaet aus FM-Funknetz
+                        # Prüfe TG313 Aktivität aus dem FM-Funknetz
                         with STORAGE_LOCK:
                             is_active_on_tg = base_call in TG313_ACTIVE_CALLSIGNS
                         

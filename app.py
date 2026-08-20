@@ -12,18 +12,13 @@ from urllib.parse import urlparse, parse_qs
 # ==========================================
 CALLSIGN = "DL4KAL"
 PASSCODE = "17065"
-
-# Filter für Wohnmobile (R), Segelyachten (Y) und Motorboote (s)
 FILTER_RULE = "s/R s/Y s/s"
-# ==========================================
 
 ACTIVE_STATIONS = {}
+STATION_HISTORY = {}  # Speichert die letzten 50 Koordinaten pro Rufzeichen
 STORAGE_LOCK = threading.Lock()
 
 def parse_aprs(raw):
-    """
-    Parst APRS-Pakete und extrahiert Koordinaten sowie Symbole.
-    """
     try:
         match = re.search(r'(?P<lat>\d{4}\.\d{2}[NS])\s*(?P<table_id>[/\\])(?P<lon>\d{5}\.\d{2}[EW])(?P<sym>.)', raw)
         if match:
@@ -39,9 +34,6 @@ def parse_aprs(raw):
                 "lat": round(lat, 5),
                 "lon": round(lon, 5),
                 "sym": d['table_id'] + d['sym'],
-                "course": "0",
-                "speed": "0",
-                "alt": 0,
                 "comment": raw.strip()
             }
     except Exception:
@@ -49,12 +41,9 @@ def parse_aprs(raw):
     return None
 
 def aprs_stream_worker():
-    """
-    Hält die dauerhafte TCP-Socket-Verbindung zum APRS-IS Server aufrecht.
-    """
     host = 'euro.aprs2.net'
     port = 14580
-    userline = f'user {CALLSIGN} pass {PASSCODE} vers PythonCloudServer 3.7 filter {FILTER_RULE}\r\n'
+    userline = f'user {CALLSIGN} pass {PASSCODE} vers PythonCloudServer 3.8 filter {FILTER_RULE}\r\n'
     
     while True:
         try:
@@ -63,7 +52,7 @@ def aprs_stream_worker():
             s.settimeout(30)
             s.connect((host, port))
             s.sendall(userline.encode('utf-8'))
-            print("[APRS] Handshake & Filter gesendet.", flush=True)
+            print("[APRS] Handshake gesendet.", flush=True)
             
             buffer = ""
             while True:
@@ -86,22 +75,29 @@ def aprs_stream_worker():
                                 "callsign": station_call,
                                 **parsed
                             }
-                        print(f"[APRS-Empfang] {station_call} @ {parsed['lat']}, {parsed['lon']}", flush=True)
+                            
+                            # Historie im Arbeitsspeicher aufbauen
+                            if station_call not in STATION_HISTORY:
+                                STATION_HISTORY[station_call] = []
+                            
+                            # Nur neue Koordinaten anhaengen
+                            history = STATION_HISTORY[station_call]
+                            new_coord = {"lat": parsed["lat"], "lon": parsed["lon"]}
+                            if not history or (history[-1]["lat"] != parsed["lat"] or history[-1]["lon"] != parsed["lon"]):
+                                history.append(new_coord)
+                                if len(history) > 50:  # Maximal 50 Punkte aufheben
+                                    history.pop(0)
 
         except Exception as e:
             print(f"[APRS-ERROR] {e}. Reconnect in 10s...", flush=True)
             time.sleep(10)
 
-# Thread sofort beim Laden des Moduls starten
 aprs_thread = threading.Thread(target=aprs_stream_worker, daemon=True)
 aprs_thread.start()
 
-# ==========================================
-# HTTP REQUEST HANDLER (API & RENDER HEALTH CHECK)
-# ==========================================
 class APRSRequestHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
-        pass  # Unterdrückt uninteressanten HTTP-Access-Log Spamm
+        pass
 
     def _send_cors_headers(self):
         self.send_header('Access-Control-Allow-Origin', '*')
@@ -126,25 +122,37 @@ class APRSRequestHandler(http.server.BaseHTTPRequestHandler):
                 payload = json.dumps(list(ACTIVE_STATIONS.values()))
             self.wfile.write(payload.encode('utf-8'))
 
+        elif parsed_url.path == '/history.json':
+            query_params = parse_qs(parsed_url.query)
+            callsign = query_params.get('callsign', [None])[0]
+            
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self._send_cors_headers()
+            self.end_headers()
+            
+            with STORAGE_LOCK:
+                if callsign and callsign in STATION_HISTORY:
+                    payload = json.dumps(STATION_HISTORY[callsign])
+                else:
+                    payload = json.dumps([])
+            self.wfile.write(payload.encode('utf-8'))
+
         elif parsed_url.path == '/':
-            # WICHTIG FÜR RENDER: Beantwortet den Health-Check
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self._send_cors_headers()
             self.end_headers()
-            self.wfile.write(b"<h3>APRS Cloud Server online!</h3><p>Nutze /data.json fuer die Daten.</p>")
+            self.wfile.write(b"APRS Server online!")
 
         else:
             self.send_response(404)
             self._send_cors_headers()
             self.end_headers()
-            self.wfile.write(b"Not Found")
 
 def run_server():
     port = int(os.environ.get("PORT", 10000))
-    server_address = ('', port)
-    httpd = http.server.HTTPServer(server_address, APRSRequestHandler)
-    print(f"[HTTP] Server laeuft auf Port {port}...", flush=True)
+    httpd = http.server.HTTPServer(('', port), APRSRequestHandler)
     httpd.serve_forever()
 
 if __name__ == '__main__':

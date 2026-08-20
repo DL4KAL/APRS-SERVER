@@ -6,24 +6,57 @@ import time
 import socket
 import threading
 import http.server
+import urllib.request
 from urllib.parse import urlparse, parse_qs
 import psycopg2
 
 # Erzwinge ungepuffertes Logging für Render
 sys.stdout.reconfigure(line_buffering=True)
-print("=== APRS SERVER STARTET ===", flush=True)
+print("=== APRS SERVER STARTET (TG 313 FILTER) ===", flush=True)
 
 # ==========================================
 # KONFIGURATION
 # ==========================================
 CALLSIGN = "DL4KAL"
 PASSCODE = "17065"
-# Filtert nach RVs (R), Yachten (Y) und Booten (b) im 250 km Radius
-FILTER_RULE = "s/R s/Y s/b"
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
 ACTIVE_STATIONS = {}
 STORAGE_LOCK = threading.Lock()
+
+# Globale Liste für aktive Rufzeichen auf TG 313
+TG313_ACTIVE_CALLSIGNS = set()
+
+def update_tg313_stations():
+    """Liest alle 30 Sekunden die BrandMeister-API für TG 313 aus"""
+    global TG313_ACTIVE_CALLSIGNS
+    url = "https://api.brandmeister.network/v2/lh/313"
+    
+    while True:
+        try:
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=10) as response:
+                if response.status == 200:
+                    data = json.loads(response.read().decode('utf-8'))
+                    # Extrahieren der Basis-Rufzeichen (ohne SSID/Suffix) aus Last Heard
+                    active = set()
+                    for item in data:
+                        call = item.get('SourceCall', '')
+                        if call:
+                            base_call = call.split('-')[0].strip().upper()
+                            active.add(base_call)
+                    
+                    with STORAGE_LOCK:
+                        TG313_ACTIVE_CALLSIGNS = active
+                    # print(f"[TG313-POLL] Aktive Stationen auf TG313: {list(TG313_ACTIVE_CALLSIGNS)}", flush=True)
+        except Exception as e:
+            print(f"[TG313-ERROR] Konnte BrandMeister API nicht abfragen: {e}", flush=True)
+            
+        time.sleep(30)
+
+# Starte den TG313-Fetcher im Hintergrund
+tg313_thread = threading.Thread(target=update_tg313_stations, daemon=True)
+tg313_thread.start()
 
 def parse_aprs(raw):
     try:
@@ -48,7 +81,7 @@ def parse_aprs(raw):
     return None
 
 def save_to_db(callsign, lat, lon, symbol, comment):
-    """Speichert jede empfangene Bake dauerhaft in Supabase"""
+    """Speichert jede empfangene TG313-Bake dauerhaft in Supabase"""
     if not DATABASE_URL:
         return
     try:
@@ -107,7 +140,8 @@ def get_history_from_db(callsign=None, hours=24):
 def aprs_stream_worker():
     host = 'euro.aprs2.net'
     port = 14580
-    userline = f'user {CALLSIGN} pass {PASSCODE} vers PythonCloudServer 4.3 filter {FILTER_RULE}\r\n'
+    # Verbindet ungefiltert zum Stream, um alle Baken zu prüfen
+    userline = f'user {CALLSIGN} pass {PASSCODE} vers PythonCloudServer 4.3\r\n'
     
     while True:
         try:
@@ -117,12 +151,6 @@ def aprs_stream_worker():
             s.connect((host, port))
             s.sendall(userline.encode('utf-8'))
             print("[APRS] Handshake gesendet.", flush=True)
-            
-            try:
-                banner = s.recv(1024).decode('utf-8', errors='ignore')
-                print(f"[APRS-SERVER] {banner.strip()}", flush=True)
-            except Exception:
-                pass
             
             buffer = ""
             while True:
@@ -140,19 +168,26 @@ def aprs_stream_worker():
                     parsed = parse_aprs(line)
                     if parsed and '>' in line:
                         station_call = line.split('>')[0].strip()
-                        print(f"[APRS-EMPFANG] {station_call} -> {parsed['lat']}, {parsed['lon']}", flush=True)
+                        base_call = station_call.split('-')[0].strip().upper()
                         
+                        # TG 313 FILTER: Nur verarbeiten, wenn das Rufzeichen auf TG313 aktiv ist!
                         with STORAGE_LOCK:
-                            ACTIVE_STATIONS[station_call] = {
-                                "callsign": station_call,
-                                **parsed
-                            }
+                            is_active_on_tg = base_call in TG313_ACTIVE_CALLSIGNS
                         
-                        threading.Thread(
-                            target=save_to_db,
-                            args=(station_call, parsed["lat"], parsed["lon"], parsed["sym"], parsed["comment"]),
-                            daemon=True
-                        ).start()
+                        if is_active_on_tg:
+                            print(f"[TG313-TREFFER] {station_call} -> {parsed['lat']}, {parsed['lon']}", flush=True)
+                            
+                            with STORAGE_LOCK:
+                                ACTIVE_STATIONS[station_call] = {
+                                    "callsign": station_call,
+                                    **parsed
+                                }
+                            
+                            threading.Thread(
+                                target=save_to_db,
+                                args=(station_call, parsed["lat"], parsed["lon"], parsed["sym"], parsed["comment"]),
+                                daemon=True
+                            ).start()
 
         except Exception as e:
             print(f"[APRS-ERROR] {e}. Reconnect in 10s...", flush=True)
@@ -206,7 +241,7 @@ class APRSRequestHandler(http.server.BaseHTTPRequestHandler):
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self._send_cors_headers()
             self.end_headers()
-            self.wfile.write(b"APRS Server online!")
+            self.wfile.write(b"APRS TG313 Server online!")
 
         else:
             self.send_response(404)

@@ -20,13 +20,13 @@ print("=== APRS SERVER STARTET (FM-FUNKNETZ TG 313 + VEHICLE FILTER) ===", flush
 CALLSIGN = "DL4KAL"
 PASSCODE = "17065"
 
-# Korrigierte Server-Filterregel: s/v = RVs, s/Y = Yachten, s/b = Motorboote
-FILTER_RULE = "filter s/v s/Y s/b"
-
-DATABASE_URL = os.environ.get("DATABASE_URL")
-
 # Erlaubte APRS-Symbole (lokale Validierung)
 ALLOWED_SYMBOLS = {'/v', '\\v', '/Y', '\\Y', '/$', '\\$', '/b', '\\b', '/R', '\\R'}
+
+# Direkte Filter-Definition für den Login-Handshake
+FILTER_RULE = "s/v s/Y s/b"
+
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
 ACTIVE_STATIONS = {}
 STORAGE_LOCK = threading.Lock()
@@ -180,35 +180,25 @@ def aprs_stream_worker():
     host = 'euro.aprs2.net'
     port = 14580
     
-    # 1. Standard Login-Zeile gemäß APRS-IS Spezifikation
-    userline = f'user {CALLSIGN} pass {PASSCODE} vers APRS-Server 3.3\r\n'
-    
-    # 2. Protokollkonformer Filterbefehl mit führendem Hash (#)
-    filtercmd = f'# {FILTER_RULE}\r\n' if FILTER_RULE else ''
+    # Der ursprüngliche direkte Login-Handshake mit integriertem Filter
+    userline = f'user {CALLSIGN} pass {PASSCODE} vers APRS-Server 3.4 filter {FILTER_RULE}\r\n'
     
     while True:
         try:
-            print(f"[APRS] Verbinde zu {host}:{port}...", flush=True)
+            print(f"[APRS] Verbinde zu {host}:{port} mit Filter '{FILTER_RULE}'...", flush=True)
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.settimeout(60)
             s.connect((host, port))
             
-            # Login senden
+            # Login und Filter direkt in einer Zeile senden
             s.sendall(userline.encode('utf-8'))
-            
-            # Filter-Befehl separat nach dem Login übermitteln
-            if filtercmd:
-                time.sleep(0.5)
-                s.sendall(filtercmd.encode('utf-8'))
-                print(f"[APRS] Filter angewendet: {FILTER_RULE}", flush=True)
-                
-            print("[APRS] Verbindung hergestellt & stabil.", flush=True)
+            print("[APRS] Handshake erfolgreich gesendet.", flush=True)
             
             buffer = ""
             while True:
                 data = s.recv(4096).decode('utf-8', errors='ignore')
                 if not data:
-                    print("[APRS] Verbindung vom Server getrennt.", flush=True)
+                    print("[APRS] Verbindung getrennt.", flush=True)
                     break
                 buffer += data
                 lines = buffer.split('\r\n')

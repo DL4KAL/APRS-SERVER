@@ -16,13 +16,18 @@ APRS_PORT = 14580
 CALLSIGN = "DL4KAL"
 PASSCODE = "17065"
 
+# ERFORDERLICH: Zeilenumbruch \r\n erzwingt die Ausführung auf euro.aprs2.net
+# t/po filtert weltweit alle Positionsbaken (Position Only)
+APRS_FILTER = "filter t/po\r\n"
+
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
 latest_stations = {}
 lock = threading.Lock()
 
+# Erweiterter Regex: Erfasst Standard-, MIC-E- (`/`) und komprimierte Baken
 APRS_REGEX = re.compile(
-    r'([A-Z0-9\-]+)>.*?:[@=!/]([0-9]{4}\.[0-9]{2}[NS])([/\\].)([0-9]{5}\.[0-9]{2}[EW])(.)(.*)'
+    r'([A-Z0-9\-]+)>.*?:[@=!/\'`\`]([0-9]{4}\.[0-9]{2}[NS])([/\\].)([0-9]{5}\.[0-9]{2}[EW])(.)(.*)'
 )
 
 def log(msg):
@@ -87,7 +92,7 @@ def get_history_from_supabase(callsign, hours=24):
 
 def aprs_client_thread():
     log("==========================================")
-    log("=== APRS THREAD GESTARTET (OHNE FILTER) ==")
+    log("=== APRS THREAD MIT WILDCARD-FILTER LAEUFT ===")
     log("==========================================")
     while True:
         try:
@@ -96,15 +101,16 @@ def aprs_client_thread():
             s.settimeout(30.0)
             s.connect((APRS_SERVER, APRS_PORT))
             
-            login_str = f"user {CALLSIGN} pass {PASSCODE} vers DL4KAL-Portal 2.2\r\n"
+            # Handshake mit inline-Filterabgabe
+            login_str = f"user {CALLSIGN} pass {PASSCODE} vers DL4KAL-Portal 2.3 {APRS_FILTER}"
             s.sendall(login_str.encode('utf-8'))
-            log("[APRS] Handshake erfolgreich gesendet. Warte auf weltweiten Datenstrom...")
+            log("[APRS] Handshake und Filter t/po gesendet.")
             
             buffer = ""
             while True:
                 data = s.recv(4096).decode('utf-8', errors='ignore')
                 if not data:
-                    log("[APRS-WARN] keine Daten empfangen, Reconnect...")
+                    log("[APRS-WARN] Keine Daten empfangen, Reconnect...")
                     break
                 
                 buffer += data
@@ -148,7 +154,6 @@ def aprs_client_thread():
             log(f"[APRS-ERROR] {e}. Reconnect in 5s...")
             time.sleep(5)
 
-# Thread direkt beim Import starten
 aprs_thread = threading.Thread(target=aprs_client_thread, daemon=True)
 aprs_thread.start()
 

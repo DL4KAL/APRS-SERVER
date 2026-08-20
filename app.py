@@ -10,27 +10,33 @@ import urllib.request
 from urllib.parse import urlparse, parse_qs
 import psycopg2
 
-# Erzwinge ungepuffertes Logging für Render
+# Ungepuffertes Logging für Render erzwingen
 sys.stdout.reconfigure(line_buffering=True)
-print("=== APRS SERVER STARTET (TG 313 FILTER) ===", flush=True)
+print("=== APRS SERVER STARTET (FM-FUNKNETZ TG 313 + VEHICLE FILTER) ===", flush=True)
 
 # ==========================================
 # KONFIGURATION
 # ==========================================
 CALLSIGN = "DL4KAL"
 PASSCODE = "17065"
+
+# APRS-IS Filterregel: s/v = Wohnmobile, s/$ = Segelyachten, s/b = Motorboote
+FILTER_RULE = "s/v s/$ s/b"
 DATABASE_URL = os.environ.get("DATABASE_URL")
+
+# Erlaubte APRS-Symbole in der Parse-Funktion
+ALLOWED_SYMBOLS = {'/v', '\\v', '/$', '\\$', '/b', '\\b'}
 
 ACTIVE_STATIONS = {}
 STORAGE_LOCK = threading.Lock()
 
-# Globale Liste für aktive Rufzeichen auf TG 313
+# Globale Liste für aktive Rufzeichen im FM-Funknetz auf TG 313
 TG313_ACTIVE_CALLSIGNS = set()
 
 def update_tg313_stations():
-    """Liest alle 30 Sekunden die BrandMeister-API für TG 313 aus"""
+    """Holt alle 15 Sekunden die aktiven Rufzeichen der TG 313 aus dem FM-Funknetz"""
     global TG313_ACTIVE_CALLSIGNS
-    url = "https://api.brandmeister.network/v2/lh/313"
+    url = "https://dashboard.fm-funknetz.de/api/status"
     
     while True:
         try:
@@ -38,25 +44,29 @@ def update_tg313_stations():
             with urllib.request.urlopen(req, timeout=10) as response:
                 if response.status == 200:
                     data = json.loads(response.read().decode('utf-8'))
-                    # Extrahieren der Basis-Rufzeichen (ohne SSID/Suffix) aus Last Heard
                     active = set()
-                    for item in data:
-                        call = item.get('SourceCall', '')
-                        if call:
-                            base_call = call.split('-')[0].strip().upper()
-                            active.add(base_call)
+                    
+                    nodes = data.get('nodes', []) if isinstance(data, dict) else []
+                    for node in nodes:
+                        tg = str(node.get('tg', ''))
+                        active_tgs = [str(x) for x in node.get('active_tgs', [])]
+                        
+                        if tg == '313' or '313' in active_tgs:
+                            call = node.get('callsign', '')
+                            if call:
+                                base_call = call.split('-')[0].strip().upper()
+                                active.add(base_call)
                     
                     with STORAGE_LOCK:
                         TG313_ACTIVE_CALLSIGNS = active
-                    # print(f"[TG313-POLL] Aktive Stationen auf TG313: {list(TG313_ACTIVE_CALLSIGNS)}", flush=True)
         except Exception as e:
-            print(f"[TG313-ERROR] Konnte BrandMeister API nicht abfragen: {e}", flush=True)
+            print(f"[FM-FUNKNETZ-ERROR] API-Abfrage fehlgeschlagen: {e}", flush=True)
             
-        time.sleep(30)
+        time.sleep(15)
 
-# Starte den TG313-Fetcher im Hintergrund
-tg313_thread = threading.Thread(target=update_tg313_stations, daemon=True)
-tg313_thread.start()
+# Starte den FM-Funknetz-Updater als Hintergrund-Thread
+fm_thread = threading.Thread(target=update_tg313_stations, daemon=True)
+fm_thread.start()
 
 def parse_aprs(raw):
     try:
@@ -70,10 +80,16 @@ def parse_aprs(raw):
             if 'W' in d['lon']: 
                 lon = -lon
             
+            symbol_code = d['table_id'] + d['sym']
+            
+            # SYMBOL-FILTER: Nur Wohnmobile, Segelyachten & Motorboote durchlassen
+            if symbol_code not in ALLOWED_SYMBOLS:
+                return None
+            
             return {
                 "lat": round(lat, 5),
                 "lon": round(lon, 5),
-                "sym": d['table_id'] + d['sym'],
+                "sym": symbol_code,
                 "comment": raw.strip()
             }
     except Exception:
@@ -140,8 +156,7 @@ def get_history_from_db(callsign=None, hours=24):
 def aprs_stream_worker():
     host = 'euro.aprs2.net'
     port = 14580
-    # Verbindet ungefiltert zum Stream, um alle Baken zu prüfen
-    userline = f'user {CALLSIGN} pass {PASSCODE} vers PythonCloudServer 4.3\r\n'
+    userline = f'user {CALLSIGN} pass {PASSCODE} vers FM-Funknetz-Server 1.1 filter {FILTER_RULE}\r\n'
     
     while True:
         try:
@@ -170,12 +185,12 @@ def aprs_stream_worker():
                         station_call = line.split('>')[0].strip()
                         base_call = station_call.split('-')[0].strip().upper()
                         
-                        # TG 313 FILTER: Nur verarbeiten, wenn das Rufzeichen auf TG313 aktiv ist!
+                        # TG 313 FILTER + SYMBOL FILTER
                         with STORAGE_LOCK:
                             is_active_on_tg = base_call in TG313_ACTIVE_CALLSIGNS
                         
                         if is_active_on_tg:
-                            print(f"[TG313-TREFFER] {station_call} -> {parsed['lat']}, {parsed['lon']}", flush=True)
+                            print(f"[TREFFER TG313 + SYMBOL] {station_call} ({parsed['sym']}) -> {parsed['lat']}, {parsed['lon']}", flush=True)
                             
                             with STORAGE_LOCK:
                                 ACTIVE_STATIONS[station_call] = {
@@ -241,7 +256,7 @@ class APRSRequestHandler(http.server.BaseHTTPRequestHandler):
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self._send_cors_headers()
             self.end_headers()
-            self.wfile.write(b"APRS TG313 Server online!")
+            self.wfile.write(b"APRS Server online! (FM-Funknetz TG 313 + Fahrzeug-Filter)")
 
         else:
             self.send_response(404)

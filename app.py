@@ -23,7 +23,7 @@ PASSCODE = "17065"
 # ALLOWED_SYMBOLS = {'/v', '\\v', '/Y', '\\Y', '/$', '\\$', '/b', '\\b', '/R', '\\R'}
 
 # Server-Filter direkt in der Login-Zeile
-FILTER_RULE = "s/v s/Y s/b"
+FILTER_RULE = "s/R s/Y s/b"
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 

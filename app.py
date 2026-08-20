@@ -11,7 +11,7 @@ from urllib.parse import urlparse, parse_qs
 
 # Ungepuffertes Logging für Render erzwingen
 sys.stdout.reconfigure(line_buffering=True)
-print("=== APRS SERVER STARTET (FIXED LOGIN) ===", flush=True)
+print("=== APRS SERVER STARTET (FIXED CORS & FILTER) ===", flush=True)
 
 # ==========================================
 # KONFIGURATION
@@ -25,8 +25,6 @@ STORAGE_LOCK = threading.Lock()
 
 def parse_aprs(raw):
     try:
-        # Filter direkt im Regex: Erlaubt als Symbol-Tabellen-ID '/' oder '\' 
-        # und als Symbol-Code exakt 'R' (Wohnmobile) oder 'Y' (Segelyachten).
         match = re.search(r'(?P<lat>\d{4}\.\d{2}[NS])\s*(?P<table_id>[/\\])(?P<lon>\d{5}\.\d{2}[EW])(?P<sym>[RY])', raw)
         if match:
             d = match.groupdict()
@@ -108,9 +106,8 @@ def get_history_from_db(callsign=None, hours=24):
 
 def aprs_stream_worker():
     host = 'euro.aprs2.net'
-    port = 10152  # Umstellung auf Port 10152 für standardkonforme Datenströme
+    port = 10152
     
-    # Exakter, minimaler APRS-IS Login-String
     userline = f'user {CALLSIGN} pass {PASSCODE} vers PythonAPRS 1.0\r\n'
     
     while True:
@@ -165,7 +162,6 @@ def aprs_stream_worker():
                 except:
                     pass
 
-# APRS-Worker im Hintergrund starten
 aprs_thread = threading.Thread(target=aprs_stream_worker, daemon=True)
 aprs_thread.start()
 
@@ -173,56 +169,61 @@ class APRSRequestHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
-    def _send_cors_headers(self):
+    def end_headers(self):
+        # Erzwingt CORS-Header bei absolut jeder Antwort (auch bei Fehlern/404)
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        super().end_headers()
 
     def do_OPTIONS(self):
         self.send_response(200)
-        self._send_cors_headers()
         self.end_headers()
 
     def do_GET(self):
-        parsed_url = urlparse(self.path)
-        
-        if parsed_url.path == '/data.json':
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json; charset=utf-8')
-            self._send_cors_headers()
-            self.end_headers()
+        try:
+            parsed_url = urlparse(self.path)
             
-            with STORAGE_LOCK:
-                payload = json.dumps(list(ACTIVE_STATIONS.values()))
-            self.wfile.write(payload.encode('utf-8'))
+            if parsed_url.path == '/data.json':
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json; charset=utf-8')
+                self.end_headers()
+                
+                with STORAGE_LOCK:
+                    payload = json.dumps(list(ACTIVE_STATIONS.values()))
+                self.wfile.write(payload.encode('utf-8'))
 
-        elif parsed_url.path == '/history.json':
-            query_params = parse_qs(parsed_url.query)
-            callsign = query_params.get('callsign', [None])[0]
-            hours = int(query_params.get('hours', [24])[0])
-            
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json; charset=utf-8')
-            self._send_cors_headers()
-            self.end_headers()
-            
-            history_data = get_history_from_db(callsign=callsign, hours=hours)
-            self.wfile.write(json.dumps(history_data).encode('utf-8'))
+            elif parsed_url.path == '/history.json':
+                query_params = parse_qs(parsed_url.query)
+                callsign = query_params.get('callsign', [None])[0]
+                hours = int(query_params.get('hours', [24])[0])
+                
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json; charset=utf-8')
+                self.end_headers()
+                
+                history_data = get_history_from_db(callsign=callsign, hours=hours)
+                self.wfile.write(json.dumps(history_data).encode('utf-8'))
 
-        elif parsed_url.path == '/':
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/html; charset=utf-8')
-            self._send_cors_headers()
-            self.end_headers()
-            self.wfile.write(b"APRS Server online! (Fahrzeug-Filter)")
+            elif parsed_url.path == '/':
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/html; charset=utf-8')
+                self.end_headers()
+                self.wfile.write(b"APRS Server online! (Fahrzeug-Filter)")
 
-        else:
-            self.send_response(404)
-            self._send_cors_headers()
-            self.end_headers()
+            else:
+                self.send_response(404)
+                self.end_headers()
+        except Exception as e:
+            print(f"[HTTP-ERROR] {e}", flush=True)
+            try:
+                self.send_response(500)
+                self.end_headers()
+            except:
+                pass
 
 def run_server():
-    port = int(os.environ.get("PORT", 10000))
+    port = int(os.environ.com("PORT", 10000)) if hasattr(os.environ, "com") else int(os.environ.get("PORT", 10000))
     print(f"Cloud-Server gestartet auf Port {port}", flush=True)
     httpd = http.server.HTTPServer(('', port), APRSRequestHandler)
     httpd.serve_forever()

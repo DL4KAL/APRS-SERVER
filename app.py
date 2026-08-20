@@ -1,12 +1,12 @@
 import socket
 import re
 import threading
-import json
 import os
 import time
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import parse_qs, urlparse
+from flask import Flask, jsonify, request
 import psycopg2
+
+app = Flask(__name__)
 
 # ==========================================
 # KONFIGURATION
@@ -14,15 +14,14 @@ import psycopg2
 APRS_SERVER = "euro.aprs2.net"
 APRS_PORT = 14580
 CALLSIGN = "DL4KAL"
-PASSCODE = "17065"  # <-- Hier deinen 5-stelligen APRS-Passcode eintragen (als String in Anfuehrungszeichen)
+PASSCODE = "17065"
 
-# Filter: 500 km Umkreis um Bonn
 APRS_FILTER = "filter r/50.7/7.1/500"
-
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
 latest_stations = {}
 lock = threading.Lock()
+thread_started = False
 
 APRS_REGEX = re.compile(
     r'([A-Z0-9\-]+)>.*?:[@=!/]([0-9]{4}\.[0-9]{2}[NS])([/\\].)([0-9]{5}\.[0-9]{2}[EW])(.)(.*)'
@@ -89,7 +88,7 @@ def get_history_from_supabase(callsign, hours=24):
         return []
 
 def aprs_client_thread():
-    log("=== START: APRS THREAD LAEUFT ===")
+    log("=== APRS SOCKET THREAD ERFOLGREICH GESTARTET ===")
     while True:
         try:
             log(f"[APRS] Verbinde zu {APRS_SERVER}:{APRS_PORT}...")
@@ -97,9 +96,9 @@ def aprs_client_thread():
             s.settimeout(30.0)
             s.connect((APRS_SERVER, APRS_PORT))
             
-            login_str = f"user {CALLSIGN} pass {PASSCODE} vers DL4KAL-Portal 1.6\r\n"
+            login_str = f"user {CALLSIGN} pass {PASSCODE} vers DL4KAL-Portal 2.0\r\n"
             s.sendall(login_str.encode('utf-8'))
-            log("[APRS] Handshake gesendet.")
+            log("[APRS] Handshake mit Passcode 17065 gesendet.")
             
             time.sleep(1)
             filter_str = f"{APRS_FILTER}\r\n"
@@ -110,7 +109,6 @@ def aprs_client_thread():
             while True:
                 data = s.recv(4096).decode('utf-8', errors='ignore')
                 if not data:
-                    log("[APRS-WARN] Keine Daten empfangen...")
                     break
                 
                 buffer += data
@@ -151,74 +149,45 @@ def aprs_client_thread():
                             ).start()
 
         except Exception as e:
-            log(f"[APRS-CRITICAL-ERROR] {e}. Reconnect in 5s...")
+            log(f"[APRS-ERROR] {e}. Reconnect in 5s...")
             time.sleep(5)
 
-# Thread explizit ohne daemon=True starten, damit Gunicorn ihn nicht beendet
-t = threading.Thread(target=aprs_client_thread)
-t.start()
+def start_aprs_once():
+    global thread_started
+    if not thread_started:
+        thread_started = True
+        t = threading.Thread(target=aprs_client_thread, daemon=True)
+        t.start()
 
-class APRSRequestHandler(BaseHTTPRequestHandler):
-    def log_message(self, format, *args):
-        pass
+# ==========================================
+# FLASK REST-API ENDPUNKTE
+# ==========================================
+@app.route('/data.json', methods=['GET'])
+def get_data():
+    start_aprs_once()
+    with lock:
+        data = list(latest_stations.values())
+    res = jsonify(data)
+    res.headers.add('Access-Control-Allow-Origin', '*')
+    return res
 
-    def _send_cors_headers(self):
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
-
-    def do_OPTIONS(self):
-        self.send_response(200)
-        self._send_cors_headers()
-        self.end_headers()
-
-    def do_GET(self):
-        parsed_path = urlparse(self.path)
+@app.route('/history.json', methods=['GET'])
+def get_history():
+    start_aprs_once()
+    callsign = request.args.get('callsign')
+    hours = request.args.get('hours', 24, type=int)
+    
+    if callsign:
+        history_data = get_history_from_supabase(callsign, hours=hours)
+        res = jsonify(history_data)
+    else:
+        res = jsonify({"error": "Parameter callsign fehlt"})
+        res.status_code = 400
         
-        if parsed_path.path == '/data.json':
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self._send_cors_headers()
-            self.end_headers()
-            
-            with lock:
-                data = list(latest_stations.values())
-            self.wfile.write(json.dumps(data).encode('utf-8'))
-            
-        elif parsed_path.path == '/history.json':
-            query_params = parse_qs(parsed_path.query)
-            callsign = query_params.get('callsign', [None])[0]
-            hours = query_params.get('hours', ['24'])[0]
-            
-            try:
-                hours_int = int(hours)
-            except ValueError:
-                hours_int = 24
-
-            if callsign:
-                history_data = get_history_from_supabase(callsign, hours=hours_int)
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/json')
-                self._send_cors_headers()
-                self.end_headers()
-                self.wfile.write(json.dumps(history_data).encode('utf-8'))
-            else:
-                self.send_response(400)
-                self._send_cors_headers()
-                self.end_headers()
-                self.wfile.write(json.dumps({"error": "Parameter 'callsign' fehlt"}).encode('utf-8'))
-        else:
-            self.send_response(404)
-            self._send_cors_headers()
-            self.end_headers()
-            self.wfile.write(b"Not Found")
-
-def run_http_server():
-    port = int(os.environ.get("PORT", 10000))
-    server_address = ('', port)
-    httpd = HTTPServer(server_address, APRSRequestHandler)
-    log(f"[HTTP] REST-API laeuft auf Port {port}...")
-    httpd.serve_forever()
+    res.headers.add('Access-Control-Allow-Origin', '*')
+    return res
 
 if __name__ == '__main__':
-    run_http_server()
+    start_aprs_once()
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)

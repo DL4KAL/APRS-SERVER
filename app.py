@@ -14,9 +14,8 @@ import psycopg2
 APRS_SERVER = "euro.aprs2.net"
 APRS_PORT = 14580
 CALLSIGN = "DL4KAL"
-PASSCODE = "17065"  # Deinen echten APRS-Passcode eintragen
+PASSCODE = "17065"  # Echten Passcode eintragen
 
-# Filter: 500 km Umkreis um Bonn
 APRS_FILTER = "filter r/50.7/7.1/500"
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -24,10 +23,14 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 latest_stations = {}
 lock = threading.Lock()
 
-# Breiter gefasster Regex für APRS-Positionsbaken
+# Breiter Regex für APRS-Positionsbaken
 APRS_REGEX = re.compile(
     r'([A-Z0-9\-]+)>.*?:[@=!/]([0-9]{4}\.[0-9]{2}[NS])([/\\].)([0-9]{5}\.[0-9]{2}[EW])(.)(.*)'
 )
+
+def log(msg):
+    """Erzwingt die sofortige Ausgabe im Render-Log (unbuffered)."""
+    print(msg, flush=True)
 
 def parse_coord(coord_str, is_lat=True):
     try:
@@ -61,7 +64,7 @@ def save_to_supabase(callsign, lat, lon, symbol, comment):
         cur.close()
         conn.close()
     except Exception as e:
-        print(f"[DB-ERROR] {e}")
+        log(f"[DB-ERROR] {e}")
 
 def get_history_from_supabase(callsign, hours=24):
     if not DATABASE_URL:
@@ -83,72 +86,82 @@ def get_history_from_supabase(callsign, hours=24):
         conn.close()
         return [{"lat": r[0], "lon": r[1], "time": r[2].isoformat(), "symbol": r[3]} for r in rows]
     except Exception as e:
-        print(f"[DB-ERROR] {e}")
+        log(f"[DB-ERROR] {e}")
         return []
 
 def aprs_client_thread():
+    log("[THREAD] APRS-IS Client Thread wurde gestartet!")
     while True:
         try:
-            print(f"[APRS] Verbinde zu {APRS_SERVER}:{APRS_PORT}...")
+            log(f"[APRS] Verbinde zu {APRS_SERVER}:{APRS_PORT}...")
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(60.0)
+            s.settimeout(30.0)
             s.connect((APRS_SERVER, APRS_PORT))
             
-            # 1. Reiner Login-Handshake
-            login_str = f"user {CALLSIGN} pass {PASSCODE} vers DL4KAL-Portal 1.3\r\n"
+            # Login-Handshake
+            login_str = f"user {CALLSIGN} pass {PASSCODE} vers DL4KAL-Portal 1.4\r\n"
             s.sendall(login_str.encode('utf-8'))
-            print("[APRS] Handshake gesendet, warte auf Server-Antwort...")
+            log("[APRS] Handshake gesendet.")
             
-            # Server-Antwort lesen (Willkommensmeldung)
-            banner = s.recv(1024).decode('utf-8', errors='ignore')
-            print(f"[APRS-SERVER] {banner.strip()}")
-            
-            # 2. Filter separat nachschieben
+            # Filter separat senden
             time.sleep(1)
             filter_str = f"{APRS_FILTER}\r\n"
             s.sendall(filter_str.encode('utf-8'))
-            print(f"[APRS] Filter aktiv: {APRS_FILTER}")
+            log(f"[APRS] Filter aktiv: {APRS_FILTER}")
             
-            f = s.makefile('r', encoding='utf-8', errors='ignore')
-            
-            for line in f:
-                if not line or line.startswith('#'):
-                    continue
+            buffer = ""
+            while True:
+                data = s.recv(4096).decode('utf-8', errors='ignore')
+                if not data:
+                    log("[APRS-WARN] Keine Daten empfangen, Reconnect...")
+                    break
                 
-                match = APRS_REGEX.search(line)
-                if match:
-                    cs = match.group(1)
-                    lat = parse_coord(match.group(2), is_lat=True)
-                    sym_table = match.group(3)
-                    lon = parse_coord(match.group(4), is_lat=False)
-                    sym_code = match.group(5)
-                    comment = match.group(6).strip()
+                buffer += data
+                lines = buffer.split('\r\n')
+                buffer = lines.pop()
+                
+                for line in lines:
+                    if not line or line.startswith('#'):
+                        continue
                     
-                    if lat is not None and lon is not None:
-                        symbol = f"{sym_table}{sym_code}"
+                    match = APRS_REGEX.search(line)
+                    if match:
+                        cs = match.group(1)
+                        lat = parse_coord(match.group(2), is_lat=True)
+                        sym_table = match.group(3)
+                        lon = parse_coord(match.group(4), is_lat=False)
+                        sym_code = match.group(5)
+                        comment = match.group(6).strip()
                         
-                        with lock:
-                            latest_stations[cs] = {
-                                "callsign": cs,
-                                "lat": lat,
-                                "lon": lon,
-                                "symbol": symbol,
-                                "comment": comment
-                            }
-                        
-                        print(f"[APRS-Empfang] {cs} @ {lat}, {lon}")
-                        
-                        threading.Thread(
-                            target=save_to_supabase,
-                            args=(cs, lat, lon, symbol, comment),
-                            daemon=True
-                        ).start()
+                        if lat is not None and lon is not None:
+                            symbol = f"{sym_table}{sym_code}"
+                            
+                            with lock:
+                                latest_stations[cs] = {
+                                    "callsign": cs,
+                                    "lat": lat,
+                                    "lon": lon,
+                                    "symbol": symbol,
+                                    "comment": comment
+                                }
+                            
+                            log(f"[APRS-Empfang] {cs} @ {lat}, {lon}")
+                            
+                            threading.Thread(
+                                target=save_to_supabase,
+                                args=(cs, lat, lon, symbol, comment),
+                                daemon=True
+                            ).start()
 
         except Exception as e:
-            print(f"[APRS-ERROR] Verbindung getrennt: {e}. Reconnect in 10s...")
-            time.sleep(10)
+            log(f"[APRS-ERROR] {e}. Reconnect in 5s...")
+            time.sleep(5)
 
 class APRSRequestHandler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        # Unterdrueckt das extrem lange Standard-HTTP-Access-Logging in Render
+        pass
+
     def _send_cors_headers(self):
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
@@ -204,7 +217,7 @@ def run_http_server():
     port = int(os.environ.get("PORT", 10000))
     server_address = ('', port)
     httpd = HTTPServer(server_address, APRSRequestHandler)
-    print(f"[HTTP] Server laeuft auf Port {port}...")
+    log(f"[HTTP] REST-API laeuft auf Port {port}...")
     httpd.serve_forever()
 
 if __name__ == '__main__':

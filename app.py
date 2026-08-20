@@ -8,14 +8,14 @@ import os
 from urllib.parse import urlparse, parse_qs
 
 # ==========================================
-# EINSTELLUNGEN
+# KONFIGURATION
 # ==========================================
 CALLSIGN = "DL4KAL"
 PASSCODE = "17065"
 FILTER_RULE = "s/R s/Y s/s"
 
 ACTIVE_STATIONS = {}
-STATION_HISTORY = {}  # Speichert die letzten 50 Koordinaten pro Rufzeichen
+STATION_HISTORY = {}  # Speichert Koordinate + Zeitstempel pro Call
 STORAGE_LOCK = threading.Lock()
 
 def parse_aprs(raw):
@@ -43,7 +43,7 @@ def parse_aprs(raw):
 def aprs_stream_worker():
     host = 'euro.aprs2.net'
     port = 14580
-    userline = f'user {CALLSIGN} pass {PASSCODE} vers PythonCloudServer 3.8 filter {FILTER_RULE}\r\n'
+    userline = f'user {CALLSIGN} pass {PASSCODE} vers PythonCloudServer 3.9 filter {FILTER_RULE}\r\n'
     
     while True:
         try:
@@ -70,23 +70,27 @@ def aprs_stream_worker():
                     parsed = parse_aprs(line)
                     if parsed and '>' in line:
                         station_call = line.split('>')[0].strip()
+                        now_ts = time.time()
+                        
                         with STORAGE_LOCK:
                             ACTIVE_STATIONS[station_call] = {
                                 "callsign": station_call,
-                                **parsed
+                                **parsed,
+                                "timestamp": now_ts
                             }
                             
-                            # Historie im Arbeitsspeicher aufbauen
                             if station_call not in STATION_HISTORY:
                                 STATION_HISTORY[station_call] = []
                             
-                            # Nur neue Koordinaten anhaengen
                             history = STATION_HISTORY[station_call]
-                            new_coord = {"lat": parsed["lat"], "lon": parsed["lon"]}
+                            new_entry = {"lat": parsed["lat"], "lon": parsed["lon"], "time": now_ts, "symbol": parsed["sym"]}
+                            
+                            # Nur anhaengen, wenn sich Position unterscheidet
                             if not history or (history[-1]["lat"] != parsed["lat"] or history[-1]["lon"] != parsed["lon"]):
-                                history.append(new_coord)
-                                if len(history) > 50:  # Maximal 50 Punkte aufheben
-                                    history.pop(0)
+                                history.append(new_entry)
+                                
+                            # Bereinige alte Eintraege (älter als 24 Stunden = 86400 Sekunden)
+                            STATION_HISTORY[station_call] = [p for p in history if now_ts - p["time"] <= 86400]
 
         except Exception as e:
             print(f"[APRS-ERROR] {e}. Reconnect in 10s...", flush=True)
@@ -125,15 +129,21 @@ class APRSRequestHandler(http.server.BaseHTTPRequestHandler):
         elif parsed_url.path == '/history.json':
             query_params = parse_qs(parsed_url.query)
             callsign = query_params.get('callsign', [None])[0]
+            hours = int(query_params.get('hours', [24])[0])
             
             self.send_response(200)
             self.send_header('Content-Type', 'application/json; charset=utf-8')
             self._send_cors_headers()
             self.end_headers()
             
+            now_ts = time.time()
+            max_age_seconds = hours * 3600
+            
             with STORAGE_LOCK:
                 if callsign and callsign in STATION_HISTORY:
-                    payload = json.dumps(STATION_HISTORY[callsign])
+                    # Filtert exakt nach den angeforderten Stunden
+                    filtered = [p for p in STATION_HISTORY[callsign] if now_ts - p["time"] <= max_age_seconds]
+                    payload = json.dumps(filtered)
                 else:
                     payload = json.dumps([])
             self.wfile.write(payload.encode('utf-8'))

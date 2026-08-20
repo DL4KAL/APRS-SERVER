@@ -14,17 +14,17 @@ import psycopg2
 APRS_SERVER = "euro.aprs2.net"
 APRS_PORT = 14580
 CALLSIGN = "DL4KAL"
-PASSCODE = "17065"  # Hier deinen echten Passcode beibehalten
+PASSCODE = "DEIN_PASSCODE"  # Deinen echten APRS-Passcode eintragen
 
 # Filter: 500 km Umkreis um Bonn
-APRS_FILTER = "filter r/50.7/7.1/500\r\n"
+APRS_FILTER = "filter r/50.7/7.1/500"
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
 latest_stations = {}
 lock = threading.Lock()
 
-# Regex für Standard-APRS-Positionsbaken (!, =, @, /)
+# Breiter gefasster Regex für APRS-Positionsbaken
 APRS_REGEX = re.compile(
     r'([A-Z0-9\-]+)>.*?:[@=!/]([0-9]{4}\.[0-9]{2}[NS])([/\\].)([0-9]{5}\.[0-9]{2}[EW])(.)(.*)'
 )
@@ -89,58 +89,64 @@ def get_history_from_supabase(callsign, hours=24):
 def aprs_client_thread():
     while True:
         try:
-            print(f"[APRS] Verbinde zu {APRS_SERVER}...")
+            print(f"[APRS] Verbinde zu {APRS_SERVER}:{APRS_PORT}...")
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(30)
+            s.settimeout(60.0)
             s.connect((APRS_SERVER, APRS_PORT))
             
-            auth = f"user {CALLSIGN} pass {PASSCODE} vers DL4KAL-Portal 1.2 {APRS_FILTER}"
-            s.sendall(auth.encode('utf-8'))
+            # 1. Reiner Login-Handshake
+            login_str = f"user {CALLSIGN} pass {PASSCODE} vers DL4KAL-Portal 1.3\r\n"
+            s.sendall(login_str.encode('utf-8'))
+            print("[APRS] Handshake gesendet, warte auf Server-Antwort...")
             
-            buffer = ""
-            while True:
-                data = s.recv(4096).decode('utf-8', errors='ignore')
-                if not data:
-                    break
+            # Server-Antwort lesen (Willkommensmeldung)
+            banner = s.recv(1024).decode('utf-8', errors='ignore')
+            print(f"[APRS-SERVER] {banner.strip()}")
+            
+            # 2. Filter separat nachschieben
+            time.sleep(1)
+            filter_str = f"{APRS_FILTER}\r\n"
+            s.sendall(filter_str.encode('utf-8'))
+            print(f"[APRS] Filter aktiv: {APRS_FILTER}")
+            
+            f = s.makefile('r', encoding='utf-8', errors='ignore')
+            
+            for line in f:
+                if not line or line.startswith('#'):
+                    continue
                 
-                buffer += data
-                lines = buffer.split('\r\n')
-                buffer = lines.pop()
-                
-                for line in lines:
-                    if line.startswith('#') or not line.strip():
-                        continue
+                match = APRS_REGEX.search(line)
+                if match:
+                    cs = match.group(1)
+                    lat = parse_coord(match.group(2), is_lat=True)
+                    sym_table = match.group(3)
+                    lon = parse_coord(match.group(4), is_lat=False)
+                    sym_code = match.group(5)
+                    comment = match.group(6).strip()
                     
-                    match = APRS_REGEX.search(line)
-                    if match:
-                        cs = match.group(1)
-                        lat = parse_coord(match.group(2), is_lat=True)
-                        sym_table = match.group(3)
-                        lon = parse_coord(match.group(4), is_lat=False)
-                        sym_code = match.group(5)
-                        comment = match.group(6).strip()
+                    if lat is not None and lon is not None:
+                        symbol = f"{sym_table}{sym_code}"
                         
-                        if lat is not None and lon is not None:
-                            symbol = f"{sym_table}{sym_code}"
-                            
-                            with lock:
-                                latest_stations[cs] = {
-                                    "callsign": cs,
-                                    "lat": lat,
-                                    "lon": lon,
-                                    "symbol": symbol,
-                                    "comment": comment
-                                }
-                            
-                            threading.Thread(
-                                target=save_to_supabase,
-                                args=(cs, lat, lon, symbol, comment),
-                                daemon=True
-                            ).start()
+                        with lock:
+                            latest_stations[cs] = {
+                                "callsign": cs,
+                                "lat": lat,
+                                "lon": lon,
+                                "symbol": symbol,
+                                "comment": comment
+                            }
+                        
+                        print(f"[APRS-Empfang] {cs} @ {lat}, {lon}")
+                        
+                        threading.Thread(
+                            target=save_to_supabase,
+                            args=(cs, lat, lon, symbol, comment),
+                            daemon=True
+                        ).start()
 
         except Exception as e:
-            print(f"[APRS-ERROR] {e}. Reconnect in 5s...")
-            time.sleep(5)
+            print(f"[APRS-ERROR] Verbindung getrennt: {e}. Reconnect in 10s...")
+            time.sleep(10)
 
 class APRSRequestHandler(BaseHTTPRequestHandler):
     def _send_cors_headers(self):

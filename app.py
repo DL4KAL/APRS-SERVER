@@ -223,7 +223,7 @@ class APRSRequestHandler(http.server.BaseHTTPRequestHandler):
                 pass
 
 def run_server():
-    port = int(os.environ.com("PORT", 10000)) if hasattr(os.environ, "com") else int(os.environ.get("PORT", 10000))
+    port = int(os.environ.get("PORT", 10000))
     print(f"Cloud-Server gestartet auf Port {port}", flush=True)
     httpd = http.server.HTTPServer(('', port), APRSRequestHandler)
     httpd.serve_forever()

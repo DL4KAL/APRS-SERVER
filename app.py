@@ -16,7 +16,6 @@ APRS_PORT = 14580
 CALLSIGN = "DL4KAL"
 PASSCODE = "17065"
 
-APRS_FILTER = "filter r/50.7/7.1/500"
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
 latest_stations = {}
@@ -88,7 +87,7 @@ def get_history_from_supabase(callsign, hours=24):
 
 def aprs_client_thread():
     log("==========================================")
-    log("=== APRS SOCKET THREAD AKTIV GESTARTET ===")
+    log("=== APRS THREAD GESTARTET (OHNE FILTER) ==")
     log("==========================================")
     while True:
         try:
@@ -97,20 +96,15 @@ def aprs_client_thread():
             s.settimeout(30.0)
             s.connect((APRS_SERVER, APRS_PORT))
             
-            login_str = f"user {CALLSIGN} pass {PASSCODE} vers DL4KAL-Portal 2.1\r\n"
+            login_str = f"user {CALLSIGN} pass {PASSCODE} vers DL4KAL-Portal 2.2\r\n"
             s.sendall(login_str.encode('utf-8'))
-            log("[APRS] Handshake gesendet.")
-            
-            time.sleep(1)
-            filter_str = f"{APRS_FILTER}\r\n"
-            s.sendall(filter_str.encode('utf-8'))
-            log(f"[APRS] Filter gesendet: {APRS_FILTER}")
+            log("[APRS] Handshake erfolgreich gesendet. Warte auf weltweiten Datenstrom...")
             
             buffer = ""
             while True:
                 data = s.recv(4096).decode('utf-8', errors='ignore')
                 if not data:
-                    log("[APRS-WARN] Keine Daten empfangen...")
+                    log("[APRS-WARN] keine Daten empfangen, Reconnect...")
                     break
                 
                 buffer += data
@@ -154,7 +148,7 @@ def aprs_client_thread():
             log(f"[APRS-ERROR] {e}. Reconnect in 5s...")
             time.sleep(5)
 
-# Direct execution on module load
+# Thread direkt beim Import starten
 aprs_thread = threading.Thread(target=aprs_client_thread, daemon=True)
 aprs_thread.start()
 

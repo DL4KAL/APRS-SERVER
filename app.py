@@ -18,7 +18,8 @@ print("=== APRS SERVER STARTET ===", flush=True)
 # ==========================================
 CALLSIGN = "DL4KAL"
 PASSCODE = "17065"
-FILTER_RULE = "r/50.7/7.1/250"
+# Filtert nach RVs (R), Yachten (Y) und Booten (b) im 250 km Radius
+FILTER_RULE = "s/R s/Y s/b"
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
 ACTIVE_STATIONS = {}

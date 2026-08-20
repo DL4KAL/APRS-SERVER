@@ -14,7 +14,7 @@ import psycopg2
 APRS_SERVER = "euro.aprs2.net"
 APRS_PORT = 14580
 CALLSIGN = "DL4KAL"
-PASSCODE = "DEIN_PASSCODE"  # Deinen echten APRS-Passcode eintragen
+PASSCODE = "17065"  # Deinen echten APRS-Passcode eintragen
 
 # Filter: 500 km Umkreis um Bonn
 APRS_FILTER = "filter r/50.7/7.1/500"

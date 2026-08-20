@@ -13,8 +13,8 @@ import aprslib
 # ==========================================
 APRS_SERVER = "euro.aprs2.net"
 APRS_PORT = 14580
-CALLSIGN = "N0CALL"
-PASSCODE = "-1"
+CALLSIGN = "DL4KAL"
+PASSCODE = "17065"
 
 # APRS-IS Filter: Umkreis 500km um Bonn (50.7° N, 7.1° E) für verlässlichen Datenstrom
 APRS_FILTER = "filter r/50.7/7.1/500"

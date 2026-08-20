@@ -1,52 +1,27 @@
-import socket
-import re
 import threading
 import os
 import time
 from flask import Flask, jsonify, request
 import psycopg2
+import aprslib
 
 app = Flask(__name__)
 
 # ==========================================
 # KONFIGURATION
 # ==========================================
-APRS_SERVER = "euro.aprs2.net"
-APRS_PORT = 14580
 CALLSIGN = "DL4KAL"
 PASSCODE = "17065"
 
-# ERFORDERLICH: Zeilenumbruch \r\n erzwingt die Ausführung auf euro.aprs2.net
-# t/po filtert weltweit alle Positionsbaken (Position Only)
-APRS_FILTER = "filter t/po\r\n"
-
+# Filter: 500 km Umkreis um Bonn
+APRS_FILTER = "filter r/50.7/7.1/500"
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
 latest_stations = {}
 lock = threading.Lock()
 
-# Erweiterter Regex: Erfasst Standard-, MIC-E- (`/`) und komprimierte Baken
-APRS_REGEX = re.compile(
-    r'([A-Z0-9\-]+)>.*?:[@=!/\'`\`]([0-9]{4}\.[0-9]{2}[NS])([/\\].)([0-9]{5}\.[0-9]{2}[EW])(.)(.*)'
-)
-
 def log(msg):
     print(str(msg), flush=True)
-
-def parse_coord(coord_str, is_lat=True):
-    try:
-        if is_lat:
-            deg = float(coord_str[:2])
-            minutes = float(coord_str[2:-1])
-            val = deg + (minutes / 60.0)
-            return -val if coord_str[-1] == 'S' else val
-        else:
-            deg = float(coord_str[:3])
-            minutes = float(coord_str[3:-1])
-            val = deg + (minutes / 60.0)
-            return -val if coord_str[-1] == 'W' else val
-    except Exception:
-        return None
 
 def save_to_supabase(callsign, lat, lon, symbol, comment):
     if not DATABASE_URL:
@@ -59,7 +34,7 @@ def save_to_supabase(callsign, lat, lon, symbol, comment):
             INSERT INTO aprs_history (callsign, latitude, longitude, symbol, comment)
             VALUES (%s, %s, %s, %s, %s)
             """,
-            (callsign, lat, lon, symbol, comment[:100])
+            (callsign, lat, lon, symbol, str(comment)[:100])
         )
         conn.commit()
         cur.close()
@@ -90,70 +65,58 @@ def get_history_from_supabase(callsign, hours=24):
         log(f"[DB-ERROR] {e}")
         return []
 
+def process_packet(packet):
+    """Callback-Funktion fuer jedes erfolgreich von aprslib empfangene Paket."""
+    try:
+        if 'latitude' in packet and 'longitude' in packet:
+            cs = packet.get('from', 'UNKNOWN')
+            lat = packet['latitude']
+            lon = packet['longitude']
+            
+            sym_table = packet.get('symbol_table', '/')
+            sym_code = packet.get('symbol', '>')
+            symbol = f"{sym_table}{sym_code}"
+            
+            comment = packet.get('comment', '')
+            
+            with lock:
+                latest_stations[cs] = {
+                    "callsign": cs,
+                    "lat": lat,
+                    "lon": lon,
+                    "symbol": symbol,
+                    "comment": comment
+                }
+            
+            log(f"[APRS-Empfang] {cs} @ {lat}, {lon}")
+            
+            threading.Thread(
+                target=save_to_supabase,
+                args=(cs, lat, lon, symbol, comment),
+                daemon=True
+            ).start()
+    except Exception as e:
+        pass
+
 def aprs_client_thread():
     log("==========================================")
-    log("=== APRS THREAD MIT WILDCARD-FILTER LAEUFT ===")
+    log("=== APRSLIB CLIENT THREAD GESTARTET ===")
     log("==========================================")
     while True:
         try:
-            log(f"[APRS] Verbinde zu {APRS_SERVER}:{APRS_PORT}...")
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(30.0)
-            s.connect((APRS_SERVER, APRS_PORT))
+            AIS = aprslib.IS(CALLSIGN, passwd=PASSCODE, host="euro.aprs2.net", port=14580)
+            AIS.set_filter(APRS_FILTER)
+            AIS.connect()
+            log("[APRS] Erfolgreich mit euro.aprs2.net verbunden!")
             
-            # Handshake mit inline-Filterabgabe
-            login_str = f"user {CALLSIGN} pass {PASSCODE} vers DL4KAL-Portal 2.3 {APRS_FILTER}"
-            s.sendall(login_str.encode('utf-8'))
-            log("[APRS] Handshake und Filter t/po gesendet.")
+            # Startet die Endlosschleife zum Verarbeiten der Pakete
+            AIS.consumer(process_packet, raw=False)
             
-            buffer = ""
-            while True:
-                data = s.recv(4096).decode('utf-8', errors='ignore')
-                if not data:
-                    log("[APRS-WARN] Keine Daten empfangen, Reconnect...")
-                    break
-                
-                buffer += data
-                lines = buffer.split('\r\n')
-                buffer = lines.pop()
-                
-                for line in lines:
-                    if not line or line.startswith('#'):
-                        continue
-                    
-                    match = APRS_REGEX.search(line)
-                    if match:
-                        cs = match.group(1)
-                        lat = parse_coord(match.group(2), is_lat=True)
-                        sym_table = match.group(3)
-                        lon = parse_coord(match.group(4), is_lat=False)
-                        sym_code = match.group(5)
-                        comment = match.group(6).strip()
-                        
-                        if lat is not None and lon is not None:
-                            symbol = f"{sym_table}{sym_code}"
-                            
-                            with lock:
-                                latest_stations[cs] = {
-                                    "callsign": cs,
-                                    "lat": lat,
-                                    "lon": lon,
-                                    "symbol": symbol,
-                                    "comment": comment
-                                }
-                            
-                            log(f"[APRS-Empfang] {cs} @ {lat}, {lon}")
-                            
-                            threading.Thread(
-                                target=save_to_supabase,
-                                args=(cs, lat, lon, symbol, comment),
-                                daemon=True
-                            ).start()
-
         except Exception as e:
-            log(f"[APRS-ERROR] {e}. Reconnect in 5s...")
+            log(f"[APRS-ERROR] Verbindungsverlust: {e}. Reconnect in 5s...")
             time.sleep(5)
 
+# Thread sofort starten
 aprs_thread = threading.Thread(target=aprs_client_thread, daemon=True)
 aprs_thread.start()
 

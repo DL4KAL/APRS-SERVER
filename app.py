@@ -6,6 +6,7 @@ import time
 import re
 import os
 from urllib.parse import urlparse, parse_qs
+import psycopg2
 
 # ==========================================
 # KONFIGURATION
@@ -13,9 +14,9 @@ from urllib.parse import urlparse, parse_qs
 CALLSIGN = "DL4KAL"
 PASSCODE = "17065"
 FILTER_RULE = "s/R s/Y s/s"
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
 ACTIVE_STATIONS = {}
-STATION_HISTORY = {}  # Speichert Koordinate + Zeitstempel pro Call
 STORAGE_LOCK = threading.Lock()
 
 def parse_aprs(raw):
@@ -40,10 +41,65 @@ def parse_aprs(raw):
         return None
     return None
 
+def save_to_db(callsign, lat, lon, symbol, comment):
+    """Speichert jede Bake dauerhaft in Supabase"""
+    if not DATABASE_URL:
+        return
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO aprs_history (callsign, latitude, longitude, symbol, comment)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (callsign, lat, lon, symbol, str(comment)[:100])
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"[DB-ERROR] {e}", flush=True)
+
+def get_history_from_db(callsign=None, hours=24):
+    """Liest historische Punkte der letzten X Stunden aus Supabase"""
+    if not DATABASE_URL:
+        return []
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        if callsign:
+            cur.execute(
+                """
+                SELECT callsign, latitude, longitude, symbol, timestamp 
+                FROM aprs_history 
+                WHERE callsign = %s AND timestamp >= NOW() - INTERVAL '%s hours'
+                ORDER BY timestamp ASC
+                """,
+                (callsign, hours)
+            )
+        else:
+            cur.execute(
+                """
+                SELECT callsign, latitude, longitude, symbol, timestamp 
+                FROM aprs_history 
+                WHERE timestamp >= NOW() - INTERVAL '%s hours'
+                ORDER BY timestamp ASC
+                """,
+                (hours,)
+            )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return [{"callsign": r[0], "lat": r[1], "lon": r[2], "symbol": r[3], "time": r[4].isoformat()} for r in rows]
+    except Exception as e:
+        print(f"[DB-ERROR] {e}", flush=True)
+        return []
+
 def aprs_stream_worker():
     host = 'euro.aprs2.net'
     port = 14580
-    userline = f'user {CALLSIGN} pass {PASSCODE} vers PythonCloudServer 3.9 filter {FILTER_RULE}\r\n'
+    userline = f'user {CALLSIGN} pass {PASSCODE} vers PythonCloudServer 4.0 filter {FILTER_RULE}\r\n'
     
     while True:
         try:
@@ -52,7 +108,6 @@ def aprs_stream_worker():
             s.settimeout(30)
             s.connect((host, port))
             s.sendall(userline.encode('utf-8'))
-            print("[APRS] Handshake gesendet.", flush=True)
             
             buffer = ""
             while True:
@@ -70,27 +125,18 @@ def aprs_stream_worker():
                     parsed = parse_aprs(line)
                     if parsed and '>' in line:
                         station_call = line.split('>')[0].strip()
-                        now_ts = time.time()
-                        
                         with STORAGE_LOCK:
                             ACTIVE_STATIONS[station_call] = {
                                 "callsign": station_call,
-                                **parsed,
-                                "timestamp": now_ts
+                                **parsed
                             }
-                            
-                            if station_call not in STATION_HISTORY:
-                                STATION_HISTORY[station_call] = []
-                            
-                            history = STATION_HISTORY[station_call]
-                            new_entry = {"lat": parsed["lat"], "lon": parsed["lon"], "time": now_ts, "symbol": parsed["sym"]}
-                            
-                            # Nur anhaengen, wenn sich Position unterscheidet
-                            if not history or (history[-1]["lat"] != parsed["lat"] or history[-1]["lon"] != parsed["lon"]):
-                                history.append(new_entry)
-                                
-                            # Bereinige alte Eintraege (älter als 24 Stunden = 86400 Sekunden)
-                            STATION_HISTORY[station_call] = [p for p in history if now_ts - p["time"] <= 86400]
+                        
+                        # Asynchrones Speichern in der Datenbank
+                        threading.Thread(
+                            target=save_to_db,
+                            args=(station_call, parsed["lat"], parsed["lon"], parsed["sym"], parsed["comment"]),
+                            daemon=True
+                        ).start()
 
         except Exception as e:
             print(f"[APRS-ERROR] {e}. Reconnect in 10s...", flush=True)
@@ -136,17 +182,8 @@ class APRSRequestHandler(http.server.BaseHTTPRequestHandler):
             self._send_cors_headers()
             self.end_headers()
             
-            now_ts = time.time()
-            max_age_seconds = hours * 3600
-            
-            with STORAGE_LOCK:
-                if callsign and callsign in STATION_HISTORY:
-                    # Filtert exakt nach den angeforderten Stunden
-                    filtered = [p for p in STATION_HISTORY[callsign] if now_ts - p["time"] <= max_age_seconds]
-                    payload = json.dumps(filtered)
-                else:
-                    payload = json.dumps([])
-            self.wfile.write(payload.encode('utf-8'))
+            history_data = get_history_from_db(callsign=callsign, hours=hours)
+            self.wfile.write(json.dumps(history_data).encode('utf-8'))
 
         elif parsed_url.path == '/':
             self.send_response(200)

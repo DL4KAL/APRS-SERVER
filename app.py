@@ -20,15 +20,14 @@ CALLSIGN = "DL4KAL"
 PASSCODE = "17065"
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
-# Erlaubte APRS-Symbole: Wohnmobile (v, R), Yachten (Y, $), Motorboote (b)
-ALLOWED_SYMBOLS = {'/v', '\\v', '/Y', '\\Y', '/$', '\\$', '/b', '\\b', '/R', '\\R'}
-
 ACTIVE_STATIONS = {}
 STORAGE_LOCK = threading.Lock()
 
 def parse_aprs(raw):
     try:
-        match = re.search(r'(?P<lat>\d{4}\.\d{2}[NS])\s*(?P<table_id>[/\\])(?P<lon>\d{5}\.\d{2}[EW])(?P<sym>.)', raw)
+        # Filter direkt im Regex: Erlaubt als Symbol-Tabellen-ID '/' oder '\' 
+        # und als Symbol-Code exakt 'R' (Wohnmobile) oder 'Y' (Segelyachten).
+        match = re.search(r'(?P<lat>\d{4}\.\d{2}[NS])\s*(?P<table_id>[/\\])(?P<lon>\d{5}\.\d{2}[EW])(?P<sym>[RY])', raw)
         if match:
             d = match.groupdict()
             lat = int(d['lat'][:2]) + float(d['lat'][2:7]) / 60
@@ -39,9 +38,6 @@ def parse_aprs(raw):
                 lon = -lon
             
             symbol_code = d['table_id'] + d['sym']
-            
-            if symbol_code not in ALLOWED_SYMBOLS:
-                return None
             
             return {
                 "lat": round(lat, 5),

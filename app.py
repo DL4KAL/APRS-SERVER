@@ -12,7 +12,7 @@ import psycopg2
 
 # Ungepuffertes Logging für Render erzwingen
 sys.stdout.reconfigure(line_buffering=True)
-print("=== APRS SERVER STARTET (TG 313 + VEHICLE FILTER) ===", flush=True)
+print("=== APRS SERVER STARTET (FM-FUNKNETZ TG 313 + VEHICLE FILTER) ===", flush=True)
 
 # ==========================================
 # KONFIGURATION
@@ -20,14 +20,13 @@ print("=== APRS SERVER STARTET (TG 313 + VEHICLE FILTER) ===", flush=True)
 CALLSIGN = "DL4KAL"
 PASSCODE = "17065"
 
-# APRS-IS Server-Filterregel direkt unter dem Passcode:
-# Filtert serverseitig nach RVs/Wohnmobilen (v), Yachten ($) und Motorbooten (b)
-FILTER_RULE = "filter s/v s/$ s/b"
+# Korrigierte Server-Filterregel: s/v = RVs, s/Y = Yachten, s/b = Motorboote
+FILTER_RULE = "filter s/v s/Y s/b"
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
-# Erlaubte Symbole für die lokale Validierung im Code
-ALLOWED_SYMBOLS = {'/v', '\\v', '/$', '\\$', '/b', '\\b', '/R', '\\R', '/Y', '\\Y'}
+# Erlaubte APRS-Symbole (lokale Validierung)
+ALLOWED_SYMBOLS = {'/v', '\\v', '/Y', '\\Y', '/$', '\\$', '/b', '\\b', '/R', '\\R'}
 
 ACTIVE_STATIONS = {}
 STORAGE_LOCK = threading.Lock()
@@ -107,7 +106,6 @@ def parse_aprs(raw):
             
             symbol_code = d['table_id'] + d['sym']
             
-            # Zusatzprüfung: Sicherstellen, dass das Symbol der erlaubten Liste entspricht
             if symbol_code not in ALLOWED_SYMBOLS:
                 return None
             
@@ -182,23 +180,35 @@ def aprs_stream_worker():
     host = 'euro.aprs2.net'
     port = 14580
     
-    # Nutzt die oben definierte FILTER_RULE direkt im Login-Handshake
-    userline = f'user {CALLSIGN} pass {PASSCODE} vers APRS-Server 3.1 {FILTER_RULE}\r\n'
+    # 1. Standard Login-Zeile gemäß APRS-IS Spezifikation
+    userline = f'user {CALLSIGN} pass {PASSCODE} vers APRS-Server 3.3\r\n'
+    
+    # 2. Protokollkonformer Filterbefehl mit führendem Hash (#)
+    filtercmd = f'# {FILTER_RULE}\r\n' if FILTER_RULE else ''
     
     while True:
         try:
-            print(f"[APRS] Verbinde zu {host}:{port} mit Filter '{FILTER_RULE}'...", flush=True)
+            print(f"[APRS] Verbinde zu {host}:{port}...", flush=True)
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.settimeout(60)
             s.connect((host, port))
+            
+            # Login senden
             s.sendall(userline.encode('utf-8'))
-            print("[APRS] Handshake erfolgreich gesendet.", flush=True)
+            
+            # Filter-Befehl separat nach dem Login übermitteln
+            if filtercmd:
+                time.sleep(0.5)
+                s.sendall(filtercmd.encode('utf-8'))
+                print(f"[APRS] Filter angewendet: {FILTER_RULE}", flush=True)
+                
+            print("[APRS] Verbindung hergestellt & stabil.", flush=True)
             
             buffer = ""
             while True:
                 data = s.recv(4096).decode('utf-8', errors='ignore')
                 if not data:
-                    print("[APRS] Verbindung getrennt.", flush=True)
+                    print("[APRS] Verbindung vom Server getrennt.", flush=True)
                     break
                 buffer += data
                 lines = buffer.split('\r\n')

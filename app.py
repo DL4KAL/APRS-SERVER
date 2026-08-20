@@ -114,21 +114,23 @@ def get_history_from_db(callsign=None, hours=24):
 def aprs_stream_worker():
     host = 'euro.aprs2.net'
     port = 14580
-    userline = f'user {CALLSIGN} pass {PASSCODE} vers APRS-Vehicle-Server 2.0\r\n'
+    # Sauber strukturierter APRS-IS Handshake mit explizitem filter-Befehl
+    userline = f'user {CALLSIGN} pass {PASSCODE} vers APRS-Vehicle-Server 2.1 filter s/v s/$ s/b\r\n'
     
     while True:
         try:
             print(f"[APRS] Verbinde zu {host}:{port}...", flush=True)
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(30)
+            s.settimeout(60)
             s.connect((host, port))
             s.sendall(userline.encode('utf-8'))
-            print("[APRS] Handshake gesendet.", flush=True)
+            print("[APRS] Handshake gesendet & Verbindung steht.", flush=True)
             
             buffer = ""
             while True:
                 data = s.recv(4096).decode('utf-8', errors='ignore')
                 if not data:
+                    print("[APRS] Verbindung vom Server getrennt.", flush=True)
                     break
                 buffer += data
                 lines = buffer.split('\r\n')
@@ -142,7 +144,7 @@ def aprs_stream_worker():
                     if parsed and '>' in line:
                         station_call = line.split('>')[0].strip()
                         
-                        print(f"[TREFFER SYMBOL] {station_call} ({parsed['sym']}) -> {parsed['lat']}, {parsed['lon']}", flush=True)
+                        print(f"[TREFFER] {station_call} ({parsed['sym']}) -> {parsed['lat']}, {parsed['lon']}", flush=True)
                         
                         with STORAGE_LOCK:
                             ACTIVE_STATIONS[station_call] = {
@@ -157,8 +159,8 @@ def aprs_stream_worker():
                         ).start()
 
         except Exception as e:
-            print(f"[APRS-ERROR] {e}. Reconnect in 10s...", flush=True)
-            time.sleep(10)
+            print(f"[APRS-ERROR] {e}. Reconnect in 5s...", flush=True)
+            time.sleep(5)
 
 aprs_thread = threading.Thread(target=aprs_stream_worker, daemon=True)
 aprs_thread.start()

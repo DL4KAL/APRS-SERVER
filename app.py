@@ -6,12 +6,12 @@ import time
 import socket
 import threading
 import http.server
-from urllib.parse import urlparse, parse_qs
 import psycopg2
+from urllib.parse import urlparse, parse_qs
 
 # Ungepuffertes Logging für Render erzwingen
 sys.stdout.reconfigure(line_buffering=True)
-print("=== APRS SERVER STARTET (STABILER STREAM) ===", flush=True)
+print("=== APRS SERVER STARTET (FIXED LOGIN) ===", flush=True)
 
 # ==========================================
 # KONFIGURATION
@@ -112,19 +112,20 @@ def get_history_from_db(callsign=None, hours=24):
 
 def aprs_stream_worker():
     host = 'euro.aprs2.net'
-    port = 14580
-    userline = f'user {CALLSIGN} pass {PASSCODE} vers APRS-Vehicle-Server 2.3\r\n'
+    port = 10152  # Umstellung auf Port 10152 für standardkonforme Datenströme
+    
+    # Exakter, minimaler APRS-IS Login-String
+    userline = f'user {CALLSIGN} pass {PASSCODE} vers PythonAPRS 1.0\r\n'
     
     while True:
         s = None
         try:
             print(f"[APRS] Verbinde zu {host}:{port}...", flush=True)
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            # Timeout auf 300 Sekunden erhöht, damit der Stream nicht vorschnell abbricht
-            s.settimeout(300)
+            s.settimeout(60)
             s.connect((host, port))
             s.sendall(userline.encode('utf-8'))
-            print("[APRS] Handshake gesendet. Stream aktiv.", flush=True)
+            print("[APRS] Login gesendet. Lausche auf Stream...", flush=True)
             
             buffer = ""
             while True:
@@ -159,8 +160,8 @@ def aprs_stream_worker():
                         ).start()
 
         except Exception as e:
-            print(f"[APRS-ERROR] {e}. Reconnect in 10s...", flush=True)
-            time.sleep(10)
+            print(f"[APRS-ERROR] {e}. Reconnect in 5s...", flush=True)
+            time.sleep(5)
         finally:
             if s:
                 try:

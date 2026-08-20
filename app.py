@@ -6,13 +6,12 @@ import time
 import socket
 import threading
 import http.server
-import urllib.request
 from urllib.parse import urlparse, parse_qs
 import psycopg2
 
 # Ungepuffertes Logging für Render erzwingen
 sys.stdout.reconfigure(line_buffering=True)
-print("=== APRS SERVER STARTET (FM-FUNKNETZ TG 313 + VEHICLE FILTER) ===", flush=True)
+print("=== APRS SERVER STARTET (FAHRZEUG-FILTER) ===", flush=True)
 
 # ==========================================
 # KONFIGURATION
@@ -21,76 +20,15 @@ CALLSIGN = "DL4KAL"
 PASSCODE = "17065"
 
 # Erlaubte APRS-Symbole (lokale Validierung)
-# ALLOWED_SYMBOLS = {'/v', '\\v', '/Y', '\\Y', '/$', '\\$', '/b', '\\b', '/R', '\\R'}
+ALLOWED_SYMBOLS = {'/v', '\\v', '/Y', '\\Y', '/$', '\\$', '/b', '\\b', '/R', '\\R'}
 
-# Direkte Filter-Definition für den Login-Handshake
+# Server-Filter direkt in der Login-Zeile
 FILTER_RULE = "s/v s/Y s/b"
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
 ACTIVE_STATIONS = {}
 STORAGE_LOCK = threading.Lock()
-
-# Globale Liste für aktive Rufzeichen auf TG 313
-TG313_ACTIVE_CALLSIGNS = set()
-API_CONNECTED = False
-
-def update_tg313_stations():
-    """Holt die aktiven Nodes der TG 313 aus dem FM-Funknetz Dashboard"""
-    global TG313_ACTIVE_CALLSIGNS, API_CONNECTED
-    urls = [
-        "https://dashboard.fm-funknetz.de/json/status.json",
-        "https://livemap.fm-funknetz.de/api/status",
-        "https://fm-funknetz.de/api/status.json"
-    ]
-    
-    while True:
-        success = False
-        for url in urls:
-            try:
-                req = urllib.request.Request(
-                    url, 
-                    headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-                )
-                with urllib.request.urlopen(req, timeout=10) as response:
-                    if response.status == 200:
-                        raw_data = response.read().decode('utf-8')
-                        data = json.loads(raw_data)
-                        active = set()
-                        
-                        nodes = data.get('nodes', [])
-                        if isinstance(nodes, dict):
-                            nodes = nodes.values()
-                            
-                        for node in nodes:
-                            tg_single = str(node.get('tg', node.get('active_tg', '')))
-                            tg_list = [str(x) for x in node.get('active_tgs', [])]
-                            
-                            if tg_single == '313' or '313' in tg_list:
-                                call = node.get('callsign', node.get('name', ''))
-                                if call:
-                                    base_call = call.split('-')[0].strip().upper()
-                                    active.add(base_call)
-                        
-                        with STORAGE_LOCK:
-                            TG313_ACTIVE_CALLSIGNS = active
-                            API_CONNECTED = True
-                        print(f"[FM-FUNKNETZ TG313] Aktive Rufzeichen ({len(active)}): {list(active)}", flush=True)
-                        success = True
-                        break
-            except Exception:
-                continue
-                
-        if not success:
-            with STORAGE_LOCK:
-                API_CONNECTED = False
-            print("[FM-FUNKNETZ] API vorübergehend nicht erreichbar. Versuche erneut...", flush=True)
-            
-        time.sleep(15)
-
-# Starte den FM-Funknetz-Updater als Hintergrund-Thread
-fm_thread = threading.Thread(target=update_tg313_stations, daemon=True)
-fm_thread.start()
 
 def parse_aprs(raw):
     try:
@@ -180,8 +118,7 @@ def aprs_stream_worker():
     host = 'euro.aprs2.net'
     port = 14580
     
-    # Der ursprüngliche direkte Login-Handshake mit integriertem Filter
-    userline = f'user {CALLSIGN} pass {PASSCODE} vers APRS-Server 3.4 filter {FILTER_RULE}\r\n'
+    userline = f'user {CALLSIGN} pass {PASSCODE} vers APRS-Server 3.5 filter {FILTER_RULE}\r\n'
     
     while True:
         try:
@@ -190,9 +127,8 @@ def aprs_stream_worker():
             s.settimeout(60)
             s.connect((host, port))
             
-            # Login und Filter direkt in einer Zeile senden
             s.sendall(userline.encode('utf-8'))
-            print("[APRS] Handshake erfolgreich gesendet.", flush=True)
+            print("[APRS] Handshake erfolgreich. Stream läuft...", flush=True)
             
             buffer = ""
             while True:
@@ -211,27 +147,20 @@ def aprs_stream_worker():
                     parsed = parse_aprs(line)
                     if parsed and '>' in line:
                         station_call = line.split('>')[0].strip()
-                        base_call = station_call.split('-')[0].strip().upper()
+                        
+                        print(f"[TREFFER SYMBOL] {station_call} ({parsed['sym']}) -> {parsed['lat']}, {parsed['lon']}", flush=True)
                         
                         with STORAGE_LOCK:
-                            api_ok = API_CONNECTED
-                            tg_list = TG313_ACTIVE_CALLSIGNS
+                            ACTIVE_STATIONS[station_call] = {
+                                "callsign": station_call,
+                                **parsed
+                            }
                         
-                        # Korrelation: APRS-Symbol trifft zu UND Station ist auf TG 313 aktiv
-                        if (not api_ok) or (base_call in tg_list):
-                            print(f"[TREFFER TG313 + SYMBOL] {station_call} ({parsed['sym']}) -> {parsed['lat']}, {parsed['lon']}", flush=True)
-                            
-                            with STORAGE_LOCK:
-                                ACTIVE_STATIONS[station_call] = {
-                                    "callsign": station_call,
-                                    **parsed
-                                }
-                            
-                            threading.Thread(
-                                target=save_to_db,
-                                args=(station_call, parsed["lat"], parsed["lon"], parsed["sym"], parsed["comment"]),
-                                daemon=True
-                            ).start()
+                        threading.Thread(
+                            target=save_to_db,
+                            args=(station_call, parsed["lat"], parsed["lon"], parsed["sym"], parsed["comment"]),
+                            daemon=True
+                        ).start()
 
         except Exception as e:
             print(f"[APRS-ERROR] {e}. Reconnect in 5s...", flush=True)
@@ -285,7 +214,7 @@ class APRSRequestHandler(http.server.BaseHTTPRequestHandler):
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self._send_cors_headers()
             self.end_headers()
-            self.wfile.write(b"APRS Server online! (FM-Funknetz TG 313 + Fahrzeug-Filter)")
+            self.wfile.write(b"APRS Server online! (Fahrzeug-Filter aktiv)")
 
         else:
             self.send_response(404)

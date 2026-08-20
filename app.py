@@ -21,7 +21,6 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 
 latest_stations = {}
 lock = threading.Lock()
-thread_started = False
 
 APRS_REGEX = re.compile(
     r'([A-Z0-9\-]+)>.*?:[@=!/]([0-9]{4}\.[0-9]{2}[NS])([/\\].)([0-9]{5}\.[0-9]{2}[EW])(.)(.*)'
@@ -88,7 +87,9 @@ def get_history_from_supabase(callsign, hours=24):
         return []
 
 def aprs_client_thread():
-    log("=== APRS SOCKET THREAD ERFOLGREICH GESTARTET ===")
+    log("==========================================")
+    log("=== APRS SOCKET THREAD AKTIV GESTARTET ===")
+    log("==========================================")
     while True:
         try:
             log(f"[APRS] Verbinde zu {APRS_SERVER}:{APRS_PORT}...")
@@ -96,9 +97,9 @@ def aprs_client_thread():
             s.settimeout(30.0)
             s.connect((APRS_SERVER, APRS_PORT))
             
-            login_str = f"user {CALLSIGN} pass {PASSCODE} vers DL4KAL-Portal 2.0\r\n"
+            login_str = f"user {CALLSIGN} pass {PASSCODE} vers DL4KAL-Portal 2.1\r\n"
             s.sendall(login_str.encode('utf-8'))
-            log("[APRS] Handshake mit Passcode 17065 gesendet.")
+            log("[APRS] Handshake gesendet.")
             
             time.sleep(1)
             filter_str = f"{APRS_FILTER}\r\n"
@@ -109,6 +110,7 @@ def aprs_client_thread():
             while True:
                 data = s.recv(4096).decode('utf-8', errors='ignore')
                 if not data:
+                    log("[APRS-WARN] Keine Daten empfangen...")
                     break
                 
                 buffer += data
@@ -152,19 +154,15 @@ def aprs_client_thread():
             log(f"[APRS-ERROR] {e}. Reconnect in 5s...")
             time.sleep(5)
 
-def start_aprs_once():
-    global thread_started
-    if not thread_started:
-        thread_started = True
-        t = threading.Thread(target=aprs_client_thread, daemon=True)
-        t.start()
+# Direct execution on module load
+aprs_thread = threading.Thread(target=aprs_client_thread, daemon=True)
+aprs_thread.start()
 
 # ==========================================
 # FLASK REST-API ENDPUNKTE
 # ==========================================
 @app.route('/data.json', methods=['GET'])
 def get_data():
-    start_aprs_once()
     with lock:
         data = list(latest_stations.values())
     res = jsonify(data)
@@ -173,7 +171,6 @@ def get_data():
 
 @app.route('/history.json', methods=['GET'])
 def get_history():
-    start_aprs_once()
     callsign = request.args.get('callsign')
     hours = request.args.get('hours', 24, type=int)
     
@@ -188,6 +185,5 @@ def get_history():
     return res
 
 if __name__ == '__main__':
-    start_aprs_once()
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)

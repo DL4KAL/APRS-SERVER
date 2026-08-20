@@ -42,11 +42,11 @@ def parse_aprs(raw):
     return None
 
 def save_to_db(callsign, lat, lon, symbol, comment):
-    """Speichert jede Bake in Supabase über den Transaction Pooler (Port 6543)"""
+    """Speichert jede empfangene Bake dauerhaft in Supabase"""
     if not DATABASE_URL:
         return
     try:
-        conn = psycopg2.connect(DATABASE_URL, prepare_threshold=0)
+        conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
         cur.execute(
             """
@@ -62,11 +62,11 @@ def save_to_db(callsign, lat, lon, symbol, comment):
         print(f"[DB-ERROR] {e}", flush=True)
 
 def get_history_from_db(callsign=None, hours=24):
-    """Liest historische Punkte aus Supabase"""
+    """Liest historische Punkte der letzten X Stunden aus Supabase"""
     if not DATABASE_URL:
         return []
     try:
-        conn = psycopg2.connect(DATABASE_URL, prepare_threshold=0)
+        conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
         
         if callsign:
@@ -101,7 +101,7 @@ def get_history_from_db(callsign=None, hours=24):
 def aprs_stream_worker():
     host = 'euro.aprs2.net'
     port = 14580
-    userline = f'user {CALLSIGN} pass {PASSCODE} vers PythonCloudServer 4.2 filter {FILTER_RULE}\r\n'
+    userline = f'user {CALLSIGN} pass {PASSCODE} vers PythonCloudServer 4.3 filter {FILTER_RULE}\r\n'
     
     while True:
         try:
@@ -110,6 +110,7 @@ def aprs_stream_worker():
             s.settimeout(30)
             s.connect((host, port))
             s.sendall(userline.encode('utf-8'))
+            print("[APRS] Handshake gesendet.", flush=True)
             
             buffer = ""
             while True:

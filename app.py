@@ -42,7 +42,7 @@ def parse_aprs(raw):
     return None
 
 def save_to_db(callsign, lat, lon, symbol, comment):
-    """Speichert jede Bake dauerhaft in Supabase"""
+    """Speichert jede Bake in Supabase"""
     if not DATABASE_URL:
         return
     try:
@@ -62,32 +62,36 @@ def save_to_db(callsign, lat, lon, symbol, comment):
         print(f"[DB-ERROR] {e}", flush=True)
 
 def get_history_from_db(callsign=None, hours=24):
-    """Liest historische Punkte der letzten X Stunden aus Supabase"""
+    """Liest historische Punkte aus Supabase - gefiltert oder alle"""
     if not DATABASE_URL:
         return []
     try:
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
+        
         if callsign:
+            # Suche nach konkretem Rufzeichen oder Fragment
             cur.execute(
                 """
                 SELECT callsign, latitude, longitude, symbol, timestamp 
                 FROM aprs_history 
-                WHERE callsign = %s AND timestamp >= NOW() - INTERVAL '%s hours'
+                WHERE callsign LIKE %s AND timestamp >= NOW() - (INTERVAL '1 hour' * %s)
                 ORDER BY timestamp ASC
                 """,
-                (callsign, hours)
+                (f"%{callsign}%", hours)
             )
         else:
+            # Abfrage ALLER Stationen im Zeitfenster
             cur.execute(
                 """
                 SELECT callsign, latitude, longitude, symbol, timestamp 
                 FROM aprs_history 
-                WHERE timestamp >= NOW() - INTERVAL '%s hours'
+                WHERE timestamp >= NOW() - (INTERVAL '1 hour' * %s)
                 ORDER BY timestamp ASC
                 """,
                 (hours,)
             )
+            
         rows = cur.fetchall()
         cur.close()
         conn.close()
@@ -99,7 +103,7 @@ def get_history_from_db(callsign=None, hours=24):
 def aprs_stream_worker():
     host = 'euro.aprs2.net'
     port = 14580
-    userline = f'user {CALLSIGN} pass {PASSCODE} vers PythonCloudServer 4.0 filter {FILTER_RULE}\r\n'
+    userline = f'user {CALLSIGN} pass {PASSCODE} vers PythonCloudServer 4.1 filter {FILTER_RULE}\r\n'
     
     while True:
         try:
@@ -131,7 +135,6 @@ def aprs_stream_worker():
                                 **parsed
                             }
                         
-                        # Asynchrones Speichern in der Datenbank
                         threading.Thread(
                             target=save_to_db,
                             args=(station_call, parsed["lat"], parsed["lon"], parsed["sym"], parsed["comment"]),

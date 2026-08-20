@@ -11,7 +11,7 @@ import psycopg2
 
 # Ungepuffertes Logging für Render erzwingen
 sys.stdout.reconfigure(line_buffering=True)
-print("=== APRS SERVER STARTET (DIREKT-FILTER) ===", flush=True)
+print("=== APRS SERVER STARTET (STABILER STREAM) ===", flush=True)
 
 # ==========================================
 # KONFIGURATION
@@ -40,7 +40,6 @@ def parse_aprs(raw):
             
             symbol_code = d['table_id'] + d['sym']
             
-            # Strikte lokale Filterung im Python-Code
             if symbol_code not in ALLOWED_SYMBOLS:
                 return None
             
@@ -114,22 +113,24 @@ def get_history_from_db(callsign=None, hours=24):
 def aprs_stream_worker():
     host = 'euro.aprs2.net'
     port = 14580
-    userline = f'user {CALLSIGN} pass {PASSCODE} vers APRS-Vehicle-Server 2.2\r\n'
+    userline = f'user {CALLSIGN} pass {PASSCODE} vers APRS-Vehicle-Server 2.3\r\n'
     
     while True:
+        s = None
         try:
             print(f"[APRS] Verbinde zu {host}:{port}...", flush=True)
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(60)
+            # Timeout auf 300 Sekunden erhöht, damit der Stream nicht vorschnell abbricht
+            s.settimeout(300)
             s.connect((host, port))
             s.sendall(userline.encode('utf-8'))
-            print("[APRS] Handshake gesendet. Empfange Stream...", flush=True)
+            print("[APRS] Handshake gesendet. Stream aktiv.", flush=True)
             
             buffer = ""
             while True:
                 data = s.recv(4096).decode('utf-8', errors='ignore')
                 if not data:
-                    print("[APRS] Verbindung vom Server getrennt.", flush=True)
+                    print("[APRS] Server hat die Verbindung geschlossen.", flush=True)
                     break
                 buffer += data
                 lines = buffer.split('\r\n')
@@ -158,8 +159,14 @@ def aprs_stream_worker():
                         ).start()
 
         except Exception as e:
-            print(f"[APRS-ERROR] {e}. Reconnect in 5s...", flush=True)
-            time.sleep(5)
+            print(f"[APRS-ERROR] {e}. Reconnect in 10s...", flush=True)
+            time.sleep(10)
+        finally:
+            if s:
+                try:
+                    s.close()
+                except:
+                    pass
 
 # APRS-Worker im Hintergrund starten
 aprs_thread = threading.Thread(target=aprs_stream_worker, daemon=True)

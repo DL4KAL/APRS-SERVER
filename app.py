@@ -6,22 +6,18 @@ import time
 import socket
 import threading
 import http.server
-import urllib.request
 from urllib.parse import urlparse, parse_qs
 import psycopg2
 
 # Ungepuffertes Logging für Render erzwingen
 sys.stdout.reconfigure(line_buffering=True)
-print("=== APRS SERVER STARTET (FM-FUNKNETZ TG 313 + VEHICLE FILTER) ===", flush=True)
+print("=== APRS SERVER STARTET (FAHRZEUG-FILTER) ===", flush=True)
 
 # ==========================================
 # KONFIGURATION
 # ==========================================
 CALLSIGN = "DL4KAL"
 PASSCODE = "17065"
-
-# Unbeschränkter APRS-IS Empfang (keine Radius-Einschränkung)
-FILTER_RULE = "" 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
 # Erlaubte APRS-Symbole: Wohnmobile (v, R), Segelyachten ($, Y), Motorboote (b)
@@ -29,52 +25,6 @@ ALLOWED_SYMBOLS = {'/v', '\\v', '/$', '\\$', '/b', '\\b', '/R', '\\R', '/Y', '\\
 
 ACTIVE_STATIONS = {}
 STORAGE_LOCK = threading.Lock()
-
-# Globale Liste für aktive Rufzeichen im FM-Funknetz auf TG 313
-TG313_ACTIVE_CALLSIGNS = set()
-
-def update_tg313_stations():
-    """Holt die aktiven Nodes der TG 313 aus der FM-Funknetz SvxServer Dashboard API"""
-    global TG313_ACTIVE_CALLSIGNS
-    url = "https://dashboard.fm-funknetz.de/json/status.json"
-    
-    while True:
-        try:
-            req = urllib.request.Request(
-                url, 
-                headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-            )
-            with urllib.request.urlopen(req, timeout=10) as response:
-                if response.status == 200:
-                    raw_data = response.read().decode('utf-8')
-                    data = json.loads(raw_data)
-                    active = set()
-                    
-                    nodes = data.get('nodes', {})
-                    if isinstance(nodes, dict):
-                        nodes = nodes.values()
-                        
-                    for node in nodes:
-                        tg = str(node.get('tg', node.get('active_tg', '')))
-                        tx = node.get('is_transmitting', False)
-                        
-                        if tg == '313' or tx:
-                            call = node.get('callsign', node.get('name', ''))
-                            if call:
-                                base_call = call.split('-')[0].strip().upper()
-                                active.add(base_call)
-                    
-                    with STORAGE_LOCK:
-                        TG313_ACTIVE_CALLSIGNS = active
-                    print(f"[FM-FUNKNETZ OK] TG313 Rufzeichen: {list(TG313_ACTIVE_CALLSIGNS)}", flush=True)
-        except Exception as e:
-            print(f"[FM-FUNKNETZ RETRY] Warte auf Daten... ({e})", flush=True)
-            
-        time.sleep(15)
-
-# Starte den FM-Funknetz-Updater als Hintergrund-Thread
-fm_thread = threading.Thread(target=update_tg313_stations, daemon=True)
-fm_thread.start()
 
 def parse_aprs(raw):
     try:
@@ -90,7 +40,7 @@ def parse_aprs(raw):
             
             symbol_code = d['table_id'] + d['sym']
             
-            # SYMBOL-FILTER: Nur Wohnmobile, Segelyachten & Motorboote
+            # STRIKTE SYMBOL-PRÜFUNG: Nur Wohnmobile, Yachten und Boote
             if symbol_code not in ALLOWED_SYMBOLS:
                 return None
             
@@ -105,7 +55,7 @@ def parse_aprs(raw):
     return None
 
 def save_to_db(callsign, lat, lon, symbol, comment):
-    """Speichert jede empfangene TG313-Bake dauerhaft in Supabase"""
+    """Speichert jede empfangene Fahrzeugbake in Supabase"""
     if not DATABASE_URL:
         return
     try:
@@ -164,7 +114,7 @@ def get_history_from_db(callsign=None, hours=24):
 def aprs_stream_worker():
     host = 'euro.aprs2.net'
     port = 14580
-    userline = f'user {CALLSIGN} pass {PASSCODE} vers FM-Funknetz-Server 1.5\r\n'
+    userline = f'user {CALLSIGN} pass {PASSCODE} vers APRS-Vehicle-Server 2.0\r\n'
     
     while True:
         try:
@@ -191,26 +141,20 @@ def aprs_stream_worker():
                     parsed = parse_aprs(line)
                     if parsed and '>' in line:
                         station_call = line.split('>')[0].strip()
-                        base_call = station_call.split('-')[0].strip().upper()
                         
-                        # Prüfe TG313 Aktivität aus dem FM-Funknetz
+                        print(f"[TREFFER SYMBOL] {station_call} ({parsed['sym']}) -> {parsed['lat']}, {parsed['lon']}", flush=True)
+                        
                         with STORAGE_LOCK:
-                            is_active_on_tg = base_call in TG313_ACTIVE_CALLSIGNS
+                            ACTIVE_STATIONS[station_call] = {
+                                "callsign": station_call,
+                                **parsed
+                            }
                         
-                        if is_active_on_tg:
-                            print(f"[TREFFER TG313 + SYMBOL] {station_call} ({parsed['sym']}) -> {parsed['lat']}, {parsed['lon']}", flush=True)
-                            
-                            with STORAGE_LOCK:
-                                ACTIVE_STATIONS[station_call] = {
-                                    "callsign": station_call,
-                                    **parsed
-                                }
-                            
-                            threading.Thread(
-                                target=save_to_db,
-                                args=(station_call, parsed["lat"], parsed["lon"], parsed["sym"], parsed["comment"]),
-                                daemon=True
-                            ).start()
+                        threading.Thread(
+                            target=save_to_db,
+                            args=(station_call, parsed["lat"], parsed["lon"], parsed["sym"], parsed["comment"]),
+                            daemon=True
+                        ).start()
 
         except Exception as e:
             print(f"[APRS-ERROR] {e}. Reconnect in 10s...", flush=True)
@@ -264,7 +208,7 @@ class APRSRequestHandler(http.server.BaseHTTPRequestHandler):
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self._send_cors_headers()
             self.end_headers()
-            self.wfile.write(b"APRS Server online! (FM-Funknetz TG 313 + Fahrzeug-Filter)")
+            self.wfile.write(b"APRS Server online! (Fahrzeug-Filter)")
 
         else:
             self.send_response(404)

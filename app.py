@@ -11,7 +11,7 @@ import psycopg2
 
 # Ungepuffertes Logging für Render erzwingen
 sys.stdout.reconfigure(line_buffering=True)
-print("=== APRS SERVER STARTET (FAHRZEUG-FILTER) ===", flush=True)
+print("=== APRS SERVER STARTET (DIREKT-FILTER) ===", flush=True)
 
 # ==========================================
 # KONFIGURATION
@@ -21,7 +21,7 @@ PASSCODE = "17065"
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
 # Erlaubte APRS-Symbole: Wohnmobile (v, R), Yachten (Y, $), Motorboote (b)
-ALLOWED_SYMBOLS = {'/R', '\\R'}
+ALLOWED_SYMBOLS = {'/v', '\\v', '/Y', '\\Y', '/$', '\\$', '/b', '\\b', '/R', '\\R'}
 
 ACTIVE_STATIONS = {}
 STORAGE_LOCK = threading.Lock()
@@ -40,7 +40,7 @@ def parse_aprs(raw):
             
             symbol_code = d['table_id'] + d['sym']
             
-            # Strikte Symbol-Prüfung
+            # Strikte lokale Filterung im Python-Code
             if symbol_code not in ALLOWED_SYMBOLS:
                 return None
             
@@ -114,7 +114,7 @@ def get_history_from_db(callsign=None, hours=24):
 def aprs_stream_worker():
     host = 'euro.aprs2.net'
     port = 14580
-    userline = f'user {CALLSIGN} pass {PASSCODE} vers APRS-Vehicle-Server 2.1 filter s/v s/Y s/b\r\n'
+    userline = f'user {CALLSIGN} pass {PASSCODE} vers APRS-Vehicle-Server 2.2\r\n'
     
     while True:
         try:
@@ -123,7 +123,7 @@ def aprs_stream_worker():
             s.settimeout(60)
             s.connect((host, port))
             s.sendall(userline.encode('utf-8'))
-            print("[APRS] Handshake gesendet & Verbindung steht.", flush=True)
+            print("[APRS] Handshake gesendet. Empfange Stream...", flush=True)
             
             buffer = ""
             while True:

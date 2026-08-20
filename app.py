@@ -11,7 +11,7 @@ from urllib.parse import urlparse, parse_qs
 
 # Ungepuffertes Logging für Render erzwingen
 sys.stdout.reconfigure(line_buffering=True)
-print("=== APRS SERVER STARTET (FIXED CORS & FILTER) ===", flush=True)
+print("=== APRS SERVER STARTET (STRIKTER FILTER: NUR /R, /Y, /s) ===", flush=True)
 
 # ==========================================
 # KONFIGURATION
@@ -25,7 +25,11 @@ STORAGE_LOCK = threading.Lock()
 
 def parse_aprs(raw):
     try:
-        match = re.search(r'(?P<lat>\d{4}\.\d{2}[NS])\s*(?P<table_id>[/\\])(?P<lon>\d{5}\.\d{2}[EW])(?P<sym>[RY])', raw)
+        # STRIKTER FILTER: 
+        # table_id MUSS '/' sein
+        # sym MUSS 'R', 'Y' oder 's' sein
+        match = re.search(r'(?P<lat>\d{4}\.\d{2}[NS])(?P<table_id>/)(?P<lon>\d{5}\.\d{2}[EW])(?P<sym>[RYs])', raw)
+        
         if match:
             d = match.groupdict()
             lat = int(d['lat'][:2]) + float(d['lat'][2:7]) / 60
@@ -36,7 +40,7 @@ def parse_aprs(raw):
                 lon = -lon
             
             symbol_code = d['table_id'] + d['sym']
-            
+
             return {
                 "lat": round(lat, 5),
                 "lon": round(lon, 5),
@@ -48,7 +52,7 @@ def parse_aprs(raw):
     return None
 
 def save_to_db(callsign, lat, lon, symbol, comment):
-    """Speichert jede empfangene Fahrzeugbake in Supabase"""
+    """Speichert jede empfangene Bake in Supabase"""
     if not DATABASE_URL:
         return
     try:
@@ -170,7 +174,6 @@ class APRSRequestHandler(http.server.BaseHTTPRequestHandler):
         pass
 
     def end_headers(self):
-        # Erzwingt CORS-Header bei absolut jeder Antwort (auch bei Fehlern/404)
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
@@ -209,7 +212,7 @@ class APRSRequestHandler(http.server.BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/html; charset=utf-8')
                 self.end_headers()
-                self.wfile.write(b"APRS Server online! (Fahrzeug-Filter)")
+                self.wfile.write(b"APRS Server online! (STRIKTER FILTER: NUR /R, /Y, /s aktiv)")
 
             else:
                 self.send_response(404)

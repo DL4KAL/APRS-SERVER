@@ -42,11 +42,11 @@ def parse_aprs(raw):
     return None
 
 def save_to_db(callsign, lat, lon, symbol, comment):
-    """Speichert jede Bake in Supabase"""
+    """Speichert jede Bake in Supabase über den Transaction Pooler (Port 6543)"""
     if not DATABASE_URL:
         return
     try:
-        conn = psycopg2.connect(DATABASE_URL)
+        conn = psycopg2.connect(DATABASE_URL, prepare_threshold=0)
         cur = conn.cursor()
         cur.execute(
             """
@@ -62,15 +62,14 @@ def save_to_db(callsign, lat, lon, symbol, comment):
         print(f"[DB-ERROR] {e}", flush=True)
 
 def get_history_from_db(callsign=None, hours=24):
-    """Liest historische Punkte aus Supabase - gefiltert oder alle"""
+    """Liest historische Punkte aus Supabase"""
     if not DATABASE_URL:
         return []
     try:
-        conn = psycopg2.connect(DATABASE_URL)
+        conn = psycopg2.connect(DATABASE_URL, prepare_threshold=0)
         cur = conn.cursor()
         
         if callsign:
-            # Suche nach konkretem Rufzeichen oder Fragment
             cur.execute(
                 """
                 SELECT callsign, latitude, longitude, symbol, timestamp 
@@ -81,7 +80,6 @@ def get_history_from_db(callsign=None, hours=24):
                 (f"%{callsign}%", hours)
             )
         else:
-            # Abfrage ALLER Stationen im Zeitfenster
             cur.execute(
                 """
                 SELECT callsign, latitude, longitude, symbol, timestamp 
@@ -103,7 +101,7 @@ def get_history_from_db(callsign=None, hours=24):
 def aprs_stream_worker():
     host = 'euro.aprs2.net'
     port = 14580
-    userline = f'user {CALLSIGN} pass {PASSCODE} vers PythonCloudServer 4.1 filter {FILTER_RULE}\r\n'
+    userline = f'user {CALLSIGN} pass {PASSCODE} vers PythonCloudServer 4.2 filter {FILTER_RULE}\r\n'
     
     while True:
         try:

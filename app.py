@@ -14,8 +14,9 @@ import psycopg2
 APRS_SERVER = "euro.aprs2.net"
 APRS_PORT = 14580
 CALLSIGN = "DL4KAL"
-PASSCODE = "17065"  # Echten Passcode eintragen
+PASSCODE = "17065"  # <-- Hier deinen 5-stelligen APRS-Passcode eintragen (als String in Anfuehrungszeichen)
 
+# Filter: 500 km Umkreis um Bonn
 APRS_FILTER = "filter r/50.7/7.1/500"
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -23,13 +24,12 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 latest_stations = {}
 lock = threading.Lock()
 
-# Regex für APRS-Positionsbaken
 APRS_REGEX = re.compile(
     r'([A-Z0-9\-]+)>.*?:[@=!/]([0-9]{4}\.[0-9]{2}[NS])([/\\].)([0-9]{5}\.[0-9]{2}[EW])(.)(.*)'
 )
 
 def log(msg):
-    print(msg, flush=True)
+    print(str(msg), flush=True)
 
 def parse_coord(coord_str, is_lat=True):
     try:
@@ -89,7 +89,7 @@ def get_history_from_supabase(callsign, hours=24):
         return []
 
 def aprs_client_thread():
-    log("[THREAD] APRS-IS Client Thread gestartet!")
+    log("=== START: APRS THREAD LAEUFT ===")
     while True:
         try:
             log(f"[APRS] Verbinde zu {APRS_SERVER}:{APRS_PORT}...")
@@ -97,20 +97,20 @@ def aprs_client_thread():
             s.settimeout(30.0)
             s.connect((APRS_SERVER, APRS_PORT))
             
-            login_str = f"user {CALLSIGN} pass {PASSCODE} vers DL4KAL-Portal 1.5\r\n"
+            login_str = f"user {CALLSIGN} pass {PASSCODE} vers DL4KAL-Portal 1.6\r\n"
             s.sendall(login_str.encode('utf-8'))
             log("[APRS] Handshake gesendet.")
             
             time.sleep(1)
             filter_str = f"{APRS_FILTER}\r\n"
             s.sendall(filter_str.encode('utf-8'))
-            log(f"[APRS] Filter aktiv: {APRS_FILTER}")
+            log(f"[APRS] Filter gesendet: {APRS_FILTER}")
             
             buffer = ""
             while True:
                 data = s.recv(4096).decode('utf-8', errors='ignore')
                 if not data:
-                    log("[APRS-WARN] keine Daten empfangen...")
+                    log("[APRS-WARN] Keine Daten empfangen...")
                     break
                 
                 buffer += data
@@ -151,19 +151,13 @@ def aprs_client_thread():
                             ).start()
 
         except Exception as e:
-            log(f"[APRS-ERROR] {e}. Reconnect in 5s...")
+            log(f"[APRS-CRITICAL-ERROR] {e}. Reconnect in 5s...")
             time.sleep(5)
 
-# ==========================================
-# THREAD AUF MODULEBENE STARTEN
-# (Erzwingt den Start auch unter Gunicorn/Render)
-# ==========================================
-aprs_thread = threading.Thread(target=aprs_client_thread, daemon=True)
-aprs_thread.start()
+# Thread explizit ohne daemon=True starten, damit Gunicorn ihn nicht beendet
+t = threading.Thread(target=aprs_client_thread)
+t.start()
 
-# ==========================================
-# REST-API SERVER
-# ==========================================
 class APRSRequestHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
@@ -223,7 +217,7 @@ def run_http_server():
     port = int(os.environ.get("PORT", 10000))
     server_address = ('', port)
     httpd = HTTPServer(server_address, APRSRequestHandler)
-    log(f"[HTTP] Server laeuft auf Port {port}...")
+    log(f"[HTTP] REST-API laeuft auf Port {port}...")
     httpd.serve_forever()
 
 if __name__ == '__main__':

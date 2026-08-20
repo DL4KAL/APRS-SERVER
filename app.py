@@ -8,6 +8,12 @@ import os
 from urllib.parse import urlparse, parse_qs
 import psycopg2
 
+import sys
+
+# Erzwinge ungepuffertes Logging für Render
+sys.stdout.reconfigure(line_buffering=True)
+print("=== APRS SERVER STARTET ===", flush=True)
+
 # ==========================================
 # KONFIGURATION
 # ==========================================

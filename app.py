@@ -12,7 +12,7 @@ from urllib.parse import urlparse, parse_qs
 
 # Ungepuffertes Logging für Render erzwingen
 sys.stdout.reconfigure(line_buffering=True)
-print("=== APRS SERVER STARTET (FILTER: /R, /Y, /s + 2500KM UMKREIS) ===", flush=True)
+print("=== APRS SERVER STARTET (STABILISIERTER STREAM + FILTER) ===", flush=True)
 
 # ==========================================
 # KONFIGURATION
@@ -31,16 +31,13 @@ STORAGE_LOCK = threading.Lock()
 
 def calculate_distance(lat1, lon1, lat2, lon2):
     """Berechnet die Entfernung zwischen zwei Punkten in Kilometern (Haversine-Formel)"""
-    R = 6371.0 # Erdradius in km
-    
+    R = 6371.0
     dlat = math.radians(lat2 - lat1)
     dlon = math.radians(lon2 - lon1)
-    
     a = (math.sin(dlat / 2) ** 2 + 
          math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * 
          math.sin(dlon / 2) ** 2)
     c = 2 * math.asin(math.sqrt(a))
-    
     return R * c
 
 def parse_aprs(raw):
@@ -57,10 +54,10 @@ def parse_aprs(raw):
             if 'W' in d['lon']: 
                 lon = -lon
             
-            # Zusätzlicher Umkreis-Filter (max 2500 km)
+            # Umkreis-Filter (max 2500 km)
             distance = calculate_distance(REF_LAT, REF_LON, lat, lon)
             if distance > MAX_DISTANCE_KM:
-                return None # Zu weit weg, verwerfen
+                return None
             
             symbol_code = d['table_id'] + d['sym']
 
@@ -134,7 +131,6 @@ def get_history_from_db(callsign=None, hours=24):
 def aprs_stream_worker():
     host = 'euro.aprs2.net'
     port = 10152
-    
     userline = f'user {CALLSIGN} pass {PASSCODE} vers PythonAPRS 1.0\r\n'
     
     while True:
@@ -142,7 +138,8 @@ def aprs_stream_worker():
         try:
             print(f"[APRS] Verbinde zu {host}:{port}...", flush=True)
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(60)
+            # Timeout auf 120 Sekunden erhöht, damit er nicht so schnell abbricht
+            s.settimeout(120)
             s.connect((host, port))
             s.sendall(userline.encode('utf-8'))
             print("[APRS] Login gesendet. Lausche auf Stream...", flush=True)
@@ -235,18 +232,18 @@ class APRSRequestHandler(http.server.BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/html; charset=utf-8')
                 self.end_headers()
-                self.wfile.write(b"APRS Server online! (Filter: /R, /Y, /s + 2500km Radius aktiv)")
+                self.wfile.write(b"APRS Server online! (Stabilisiert & Gefiltert)")
 
             else:
                 self.send_response(404)
                 self.end_headers()
         except Exception as e:
-                print(f"[HTTP-ERROR] {e}", flush=True)
-                try:
-                    self.send_response(500)
-                    self.end_headers()
-                except:
-                    pass
+            print(f"[HTTP-ERROR] {e}", flush=True)
+            try:
+                self.send_response(500)
+                self.end_headers()
+            except:
+                pass
 
 def run_server():
     port = int(os.environ.get("PORT", 10000))

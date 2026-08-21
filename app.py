@@ -231,5 +231,26 @@ def run_server():
     httpd = http.server.HTTPServer(('', port), APRSRequestHandler)
     httpd.serve_forever()
 
+def keep_alive_worker():
+    """Pingt alle 4 Minuten die eigene Render-URL an, um den Schlafmodus zu verhindern"""
+    time.sleep(15)
+    url = os.environ.get("RENDER_EXTERNAL_URL")
+    if not url:
+        url = "https://aprs-server-1.onrender.com"
+    
+    print(f"[KEEP-ALIVE] Gestartet für URL: {url}", flush=True)
+    while True:
+        try:
+            req = urllib.request.Request(url, headers={'User-Agent': 'KeepAliveBot/1.0'})
+            with urllib.request.urlopen(req, timeout=10) as response:
+                pass
+        except Exception:
+            pass
+        time.sleep(240)
+
+# Keep-Alive-Thread im Hintergrund starten
+keep_alive_thread = threading.Thread(target=keep_alive_worker, daemon=True)
+keep_alive_thread.start()
+
 if __name__ == '__main__':
     run_server()

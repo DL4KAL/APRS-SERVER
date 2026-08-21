@@ -51,13 +51,39 @@ def parse_aprs(raw):
         return None
     return None
 
+#def save_to_db(callsign, lat, lon, symbol, comment):
+#   """Speichert jede empfangene Bake in Supabase"""
+#  if not DATABASE_URL:
+#        return
+#    try:
+#        conn = psycopg2.connect(DATABASE_URL, connect_timeout=5)
+#        cur = conn.cursor()
+#        cur.execute(
+#           """
+#            INSERT INTO aprs_history (callsign, latitude, longitude, symbol, comment)
+#            VALUES (%s, %s, %s, %s, %s)
+#            """,
+#            (callsign, lat, lon, symbol, str(comment)[:100])
+#        )
+#        conn.commit()
+#        cur.close()
+#        conn.close()
+#    except Exception as e:
+#        print(f"[DB-WRITE-ERROR] {e}", flush=True)
+
+# --- NEUER BLOCK MIT 24H-BEREINIGUNG ---
 def save_to_db(callsign, lat, lon, symbol, comment):
-    """Speichert jede empfangene Bake in Supabase"""
+    """Speichert die Bake und löscht gleichzeitig alle Einträge, die älter als 24 Stunden sind"""
     if not DATABASE_URL:
         return
     try:
         conn = psycopg2.connect(DATABASE_URL, connect_timeout=5)
         cur = conn.cursor()
+        
+        # Einträge älter als 24 Stunden löschen
+        cur.execute("DELETE FROM aprs_history WHERE timestamp < NOW() - INTERVAL '24 hours'")
+        
+        # Neuen Datensatz einfügen
         cur.execute(
             """
             INSERT INTO aprs_history (callsign, latitude, longitude, symbol, comment)

@@ -7,11 +7,12 @@ import socket
 import threading
 import http.server
 import psycopg2
+import math
 from urllib.parse import urlparse, parse_qs
 
 # Ungepuffertes Logging für Render erzwingen
 sys.stdout.reconfigure(line_buffering=True)
-print("=== APRS SERVER STARTET (STRIKTER FILTER: NUR /R, /Y, /s) ===", flush=True)
+print("=== APRS SERVER STARTET (FILTER: /R, /Y, /s + 2500KM UMKREIS) ===", flush=True)
 
 # ==========================================
 # KONFIGURATION
@@ -20,14 +21,31 @@ CALLSIGN = "DL4KAL"
 PASSCODE = "17065"
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
+# Referenzpunkt für den 2500 km Umkreis (Mitte Deutschland)
+REF_LAT = 51.1643
+REF_LON = 10.4542
+MAX_DISTANCE_KM = 2500.0
+
 ACTIVE_STATIONS = {}
 STORAGE_LOCK = threading.Lock()
 
+def calculate_distance(lat1, lon1, lat2, lon2):
+    """Berechnet die Entfernung zwischen zwei Punkten in Kilometern (Haversine-Formel)"""
+    R = 6371.0 # Erdradius in km
+    
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    
+    a = (math.sin(dlat / 2) ** 2 + 
+         math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * 
+         math.sin(dlon / 2) ** 2)
+    c = 2 * math.asin(math.sqrt(a))
+    
+    return R * c
+
 def parse_aprs(raw):
     try:
-        # STRIKTER FILTER: 
-        # table_id MUSS '/' sein
-        # sym MUSS 'R', 'Y' oder 's' sein
+        # Filter auf Symbole: /R, /Y, /s
         match = re.search(r'(?P<lat>\d{4}\.\d{2}[NS])(?P<table_id>/)(?P<lon>\d{5}\.\d{2}[EW])(?P<sym>[RYs])', raw)
         
         if match:
@@ -38,6 +56,11 @@ def parse_aprs(raw):
             lon = int(d['lon'][:3]) + float(d['lon'][3:8]) / 60
             if 'W' in d['lon']: 
                 lon = -lon
+            
+            # Zusätzlicher Umkreis-Filter (max 2500 km)
+            distance = calculate_distance(REF_LAT, REF_LON, lat, lon)
+            if distance > MAX_DISTANCE_KM:
+                return None # Zu weit weg, verwerfen
             
             symbol_code = d['table_id'] + d['sym']
 
@@ -51,39 +74,13 @@ def parse_aprs(raw):
         return None
     return None
 
-#def save_to_db(callsign, lat, lon, symbol, comment):
-#   """Speichert jede empfangene Bake in Supabase"""
-#  if not DATABASE_URL:
-#        return
-#    try:
-#        conn = psycopg2.connect(DATABASE_URL, connect_timeout=5)
-#        cur = conn.cursor()
-#        cur.execute(
-#           """
-#            INSERT INTO aprs_history (callsign, latitude, longitude, symbol, comment)
-#            VALUES (%s, %s, %s, %s, %s)
-#            """,
-#            (callsign, lat, lon, symbol, str(comment)[:100])
-#        )
-#        conn.commit()
-#        cur.close()
-#        conn.close()
-#    except Exception as e:
-#        print(f"[DB-WRITE-ERROR] {e}", flush=True)
-
-# --- NEUER BLOCK MIT 24H-BEREINIGUNG ---
 def save_to_db(callsign, lat, lon, symbol, comment):
-    """Speichert die Bake und löscht gleichzeitig alle Einträge, die älter als 24 Stunden sind"""
+    """Speichert jede empfangene Bake in Supabase"""
     if not DATABASE_URL:
         return
     try:
         conn = psycopg2.connect(DATABASE_URL, connect_timeout=5)
         cur = conn.cursor()
-        
-        # Einträge älter als 24 Stunden löschen
-        cur.execute("DELETE FROM aprs_history WHERE timestamp < NOW() - INTERVAL '24 hours'")
-        
-        # Neuen Datensatz einfügen
         cur.execute(
             """
             INSERT INTO aprs_history (callsign, latitude, longitude, symbol, comment)
@@ -238,45 +235,24 @@ class APRSRequestHandler(http.server.BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/html; charset=utf-8')
                 self.end_headers()
-                self.wfile.write(b"APRS Server online! (STRIKTER FILTER: NUR /R, /Y, /s aktiv)")
+                self.wfile.write(b"APRS Server online! (Filter: /R, /Y, /s + 2500km Radius aktiv)")
 
             else:
                 self.send_response(404)
                 self.end_headers()
         except Exception as e:
-            print(f"[HTTP-ERROR] {e}", flush=True)
-            try:
-                self.send_response(500)
-                self.end_headers()
-            except:
-                pass
+                print(f"[HTTP-ERROR] {e}", flush=True)
+                try:
+                    self.send_response(500)
+                    self.end_headers()
+                except:
+                    pass
 
 def run_server():
     port = int(os.environ.get("PORT", 10000))
     print(f"Cloud-Server gestartet auf Port {port}", flush=True)
     httpd = http.server.HTTPServer(('', port), APRSRequestHandler)
     httpd.serve_forever()
-
-def keep_alive_worker():
-    """Pingt alle 4 Minuten die eigene Render-URL an, um den Schlafmodus zu verhindern"""
-    time.sleep(15)
-    url = os.environ.get("RENDER_EXTERNAL_URL")
-    if not url:
-        url = "https://aprs-server-1.onrender.com"
-    
-    print(f"[KEEP-ALIVE] Gestartet für URL: {url}", flush=True)
-    while True:
-        try:
-            req = urllib.request.Request(url, headers={'User-Agent': 'KeepAliveBot/1.0'})
-            with urllib.request.urlopen(req, timeout=10) as response:
-                pass
-        except Exception:
-            pass
-        time.sleep(240)
-
-# Keep-Alive-Thread im Hintergrund starten
-keep_alive_thread = threading.Thread(target=keep_alive_worker, daemon=True)
-keep_alive_thread.start()
 
 if __name__ == '__main__':
     run_server()

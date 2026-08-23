@@ -12,7 +12,7 @@ from urllib.parse import urlparse, parse_qs
 
 # Ungepuffertes Logging für Render erzwingen
 sys.stdout.reconfigure(line_buffering=True)
-print("=== APRS SERVER STARTET (LIVEDARSTELLUNG ALS STANDARD) ===", flush=True)
+print("=== APRS SERVER STARTET (LIVEDARSTELLUNG + HISTORIE) ===", flush=True)
 
 # ==========================================
 # KONFIGURATION
@@ -160,7 +160,6 @@ def aprs_stream_worker():
                         
                         print(f"[TREFFER] {station_call} ({parsed['sym']}) -> {parsed['lat']}, {parsed['lon']}", flush=True)
                         
-                        # Direkt asynchron in die Datenbank schreiben
                         threading.Thread(
                             target=save_to_db,
                             args=(station_call, parsed["lat"], parsed["lon"], parsed["sym"], parsed["comment"]),
@@ -202,12 +201,12 @@ class APRSRequestHandler(http.server.BaseHTTPRequestHandler):
                 query_params = parse_qs(parsed_url.query)
                 callsign = query_params.get('callsign', [None])[0]
                 
-                # Modus-Auswertung: Standard ist ab sofort 'live' (1 Stunde)
+                # Standard ist 'live' (1 Stunde), 'long' steht z.B. für 24 oder 48 Stunden
                 mode = query_params.get('mode', ['live'])[0]
                 if mode == 'long':
-                    hours = 48
+                    hours = 24  # Anpassbar auf 24 oder 48 Stunden
                 else:
-                    hours = 1  # Standard: Livedarstellung (letzte 1 Stunde)
+                    hours = 1   # Standard: Livedarstellung (letzte 1 Stunde)
                 
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json; charset=utf-8')
@@ -220,7 +219,7 @@ class APRSRequestHandler(http.server.BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/html; charset=utf-8')
                 self.end_headers()
-                self.wfile.write(b"APRS Server online! Standard ist die Livedarstellung (/history.json).")
+                self.wfile.write(b"APRS Server online! Standard ist die Livedarstellung.")
 
             else:
                 self.send_response(404)

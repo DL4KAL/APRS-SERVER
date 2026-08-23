@@ -91,7 +91,7 @@ def save_to_db(callsign, lat, lon, symbol, comment):
     except Exception as e:
         print(f"[DB-WRITE-ERROR] {e}", flush=True)
 
-def get_history_from_db(callsign=None, hours=24):
+def get_history_from_db(callsign=None, hours=1):
     """Liest historische Punkte der letzten X Stunden aus Supabase"""
     if not DATABASE_URL:
         return []
@@ -138,7 +138,6 @@ def aprs_stream_worker():
         try:
             print(f"[APRS] Verbinde zu {host}:{port}...", flush=True)
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            # Timeout auf 120 Sekunden erhöht, damit er nicht so schnell abbricht
             s.settimeout(120)
             s.connect((host, port))
             s.sendall(userline.encode('utf-8'))
@@ -219,7 +218,13 @@ class APRSRequestHandler(http.server.BaseHTTPRequestHandler):
             elif parsed_url.path == '/history.json':
                 query_params = parse_qs(parsed_url.query)
                 callsign = query_params.get('callsign', [None])[0]
-                hours = int(query_params.get('hours', [24])[0])
+                
+                # Modus-Auswertung: 'short' (1 Stunde) oder 'long' (48 Stunden)
+                mode = query_params.get('mode', ['short'])[0]
+                if mode == 'long':
+                    hours = 48
+                else:
+                    hours = 1  # Standard für "Historie kurz"
                 
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json; charset=utf-8')
@@ -236,7 +241,7 @@ class APRSRequestHandler(http.server.BaseHTTPRequestHandler):
 
             else:
                 self.send_response(404)
-                self.end_headers()
+                self.send_headers()
         except Exception as e:
             print(f"[HTTP-ERROR] {e}", flush=True)
             try:

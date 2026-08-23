@@ -206,25 +206,18 @@ class APRSRequestHandler(http.server.BaseHTTPRequestHandler):
         try:
             parsed_url = urlparse(self.path)
             
-            if parsed_url.path == '/data.json':
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/json; charset=utf-8')
-                self.end_headers()
-                
-                with STORAGE_LOCK:
-                    payload = json.dumps(list(ACTIVE_STATIONS.values()))
-                self.wfile.write(payload.encode('utf-8'))
-
-            elif parsed_url.path == '/history.json':
+            # Hinweis: /data.json wurde entfernt (Livedarstellung entfällt, stattdessen läuft alles über die DB-Historie)
+            
+            if parsed_url.path == '/history.json':
                 query_params = parse_qs(parsed_url.query)
                 callsign = query_params.get('callsign', [None])[0]
                 
-                # Modus-Auswertung: 'short' (1 Stunde) oder 'long' (48 Stunden)
-                mode = query_params.get('mode', ['short'])[0]
+                # Modus-Auswertung: 'live' (entspricht der ehemaligen 1-Stunden-Historie) oder 'long' (48 Stunden)
+                mode = query_params.get('mode', ['live'])[0]
                 if mode == 'long':
                     hours = 48
                 else:
-                    hours = 1  # Standard für "Historie kurz"
+                    hours = 1  # Livedarstellung (letzte Stunde)
                 
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json; charset=utf-8')
@@ -237,11 +230,11 @@ class APRSRequestHandler(http.server.BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/html; charset=utf-8')
                 self.end_headers()
-                self.wfile.write(b"APRS Server online! (Stabilisiert & Gefiltert)")
+                self.wfile.write(b"APRS Server online! (Livedarstellung & Historie Lang)")
 
             else:
                 self.send_response(404)
-                self.send_headers()
+                self.end_headers()
         except Exception as e:
             print(f"[HTTP-ERROR] {e}", flush=True)
             try:

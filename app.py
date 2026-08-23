@@ -12,7 +12,7 @@ from urllib.parse import urlparse, parse_qs
 
 # Ungepuffertes Logging für Render erzwingen
 sys.stdout.reconfigure(line_buffering=True)
-print("=== APRS SERVER STARTET (STABILISIERTER STREAM + FILTER) ===", flush=True)
+print("=== APRS SERVER STARTET (LIVEDARSTELLUNG ALS STANDARD) ===", flush=True)
 
 # ==========================================
 # KONFIGURATION
@@ -25,9 +25,6 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 REF_LAT = 51.1643
 REF_LON = 10.4542
 MAX_DISTANCE_KM = 2500.0
-
-ACTIVE_STATIONS = {}
-STORAGE_LOCK = threading.Lock()
 
 def calculate_distance(lat1, lon1, lat2, lon2):
     """Berechnet die Entfernung zwischen zwei Punkten in Kilometern (Haversine-Formel)"""
@@ -72,7 +69,7 @@ def parse_aprs(raw):
     return None
 
 def save_to_db(callsign, lat, lon, symbol, comment):
-    """Speichert jede empfangene Bake in Supabase"""
+    """Speichert jede empfangene Bake direkt in Supabase"""
     if not DATABASE_URL:
         return
     try:
@@ -163,12 +160,7 @@ def aprs_stream_worker():
                         
                         print(f"[TREFFER] {station_call} ({parsed['sym']}) -> {parsed['lat']}, {parsed['lon']}", flush=True)
                         
-                        with STORAGE_LOCK:
-                            ACTIVE_STATIONS[station_call] = {
-                                "callsign": station_call,
-                                **parsed
-                            }
-                        
+                        # Direkt asynchron in die Datenbank schreiben
                         threading.Thread(
                             target=save_to_db,
                             args=(station_call, parsed["lat"], parsed["lon"], parsed["sym"], parsed["comment"]),
@@ -206,18 +198,16 @@ class APRSRequestHandler(http.server.BaseHTTPRequestHandler):
         try:
             parsed_url = urlparse(self.path)
             
-            # Hinweis: /data.json wurde entfernt (Livedarstellung entfällt, stattdessen läuft alles über die DB-Historie)
-            
             if parsed_url.path == '/history.json':
                 query_params = parse_qs(parsed_url.query)
                 callsign = query_params.get('callsign', [None])[0]
                 
-                # Modus-Auswertung: 'live' (entspricht der ehemaligen 1-Stunden-Historie) oder 'long' (48 Stunden)
+                # Modus-Auswertung: Standard ist ab sofort 'live' (1 Stunde)
                 mode = query_params.get('mode', ['live'])[0]
                 if mode == 'long':
                     hours = 48
                 else:
-                    hours = 1  # Livedarstellung (letzte Stunde)
+                    hours = 1  # Standard: Livedarstellung (letzte 1 Stunde)
                 
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json; charset=utf-8')
@@ -230,7 +220,7 @@ class APRSRequestHandler(http.server.BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/html; charset=utf-8')
                 self.end_headers()
-                self.wfile.write(b"APRS Server online! (Livedarstellung & Historie Lang)")
+                self.wfile.write(b"APRS Server online! Standard ist die Livedarstellung (/history.json).")
 
             else:
                 self.send_response(404)

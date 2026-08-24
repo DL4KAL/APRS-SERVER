@@ -201,12 +201,11 @@ class APRSRequestHandler(http.server.BaseHTTPRequestHandler):
                 query_params = parse_qs(parsed_url.query)
                 callsign = query_params.get('callsign', [None])[0]
                 
-                # Standard ist 'live' (1 Stunde), 'long' steht z.B. für 24 oder 48 Stunden
-                mode = query_params.get('mode', ['live'])[0]
-                if mode == 'long':
-                    hours = 24  # Anpassbar auf 24 oder 48 Stunden
-                else:
-                    hours = 1   # Standard: Livedarstellung (letzte 1 Stunde)
+                # Liest den 'hours'-Parameter direkt aus der URL aus (Fallback auf 1 Stunde)
+                try:
+                    hours = int(query_params.get('hours', [1])[0])
+                except ValueError:
+                    hours = 1
                 
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json; charset=utf-8')

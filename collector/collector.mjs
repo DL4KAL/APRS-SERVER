@@ -2,8 +2,8 @@ import net from "node:net";
 
 const HOST = "euro.aprs2.net";
 const PORT = 10152;
-const CALL = "DL4KAL";
-const PASS = "17065";
+const CALL = process.env.APRS_CALL;
+const PASS = process.env.APRS_PASS;
 const FILTER = "r/51.1643/10.4542/2500";
 const LISTEN_MS = 270_000;
 const MAX_KM = 2500;

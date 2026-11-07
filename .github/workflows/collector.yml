@@ -2,7 +2,7 @@ name: aprs-collector
 
 on:
   schedule:
-    - cron: "*/5 * * * *" # v2
+    - cron: "*/5 * * * *" 
   workflow_dispatch:
 
 concurrency:
@@ -24,3 +24,5 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           APRS_CALL: ${{ secrets.APRS_CALL }}
           APRS_PASS: ${{ secrets.APRS_PASS }}
+
+#v2

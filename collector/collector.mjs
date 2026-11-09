@@ -12,6 +12,8 @@ const REF_LON = 10.4542;
 
 // Gespeichert werden nur Wohnmobile (/r, /R) und Yachten (/y, /Y)
 const WANTED = new Set(["/r", "/R", "/y", "/Y"]);
+// Nur Rufzeichen mit SSID -7 werden gespeichert
+const SSID_SUFFIX = "-7";
 const SUPA_URL = process.env.SUPABASE_URL;
 const SUPA_KEY = process.env.SUPABASE_SERVICE_KEY;
 const RETENTION_H = 24;
@@ -30,6 +32,10 @@ function parse(line) {
   const idx = line.indexOf(":");
   if (idx < 0 || !line.includes(">")) return null;
   const call = line.slice(0, line.indexOf(">")).trim();
+
+  // SSID-Prüfung: Rufzeichen muss auf -7 enden
+  if (!call.endsWith(SSID_SUFFIX)) return null;
+
   const info = line.slice(idx + 1);
 
   const m = info.match(/(\d{4}\.\d{2})([NS])(.)(\d{5}\.\d{2})([EW])(.)/);

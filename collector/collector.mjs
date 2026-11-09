@@ -10,7 +10,8 @@ const MAX_KM = 2500;
 const REF_LAT = 51.1643;
 const REF_LON = 10.4542;
 
-const WANTED = new Set(["/R", "/Y", "/s"]);
+// Gespeichert werden nur Wohnmobile (/r, /R) und Yachten (/y, /Y)
+const WANTED = new Set(["/r", "/R", "/y", "/Y"]);
 const SUPA_URL = process.env.SUPABASE_URL;
 const SUPA_KEY = process.env.SUPABASE_SERVICE_KEY;
 const RETENTION_H = 24;
@@ -34,8 +35,9 @@ function parse(line) {
   const m = info.match(/(\d{4}\.\d{2})([NS])(.)(\d{5}\.\d{2})([EW])(.)/);
   if (!m) return null;
 
-  const symbol = "/" + m[6];
-  if (!WANTED.has(m[3] + m[6]) && !WANTED.has(symbol)) return null;
+  // Symbol = Tabellenzeichen + Symbolcode, z. B. "/R" oder "/y"
+  const symbol = m[3] + m[6];
+  if (!WANTED.has(symbol)) return null;
 
   let lat = parseInt(m[1].slice(0, 2)) + parseFloat(m[1].slice(2)) / 60;
   let lon = parseInt(m[4].slice(0, 3)) + parseFloat(m[4].slice(3)) / 60;
@@ -72,7 +74,7 @@ async function flush() {
     if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`);
   }
 
-  // NEU: Einträge älter als 24 Stunden entfernen
+  // Einträge älter als 24 Stunden entfernen
   const cutoff = new Date(Date.now() - RETENTION_H * 3600 * 1000).toISOString();
   const del = await fetch(
     `${SUPA_URL}/rest/v1/aprs_history?timestamp=lt.${encodeURIComponent(cutoff)}`,

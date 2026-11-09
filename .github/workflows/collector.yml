@@ -2,8 +2,8 @@ name: aprs-collector
 
 on:
   schedule:
-    - cron: "*/5 * * * *" 
-  workflow_dispatch:
+     schedule:
+    - cron: "0 * * * *"
 
 concurrency:
   group: aprs

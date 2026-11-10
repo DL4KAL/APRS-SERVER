@@ -127,3 +127,4 @@ sock.on("close", async () => {
     process.exit(1);
   }
 });
+# Zeitplan neu gesetzt
